@@ -41,12 +41,19 @@ jobs:
             echo "found=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
           TITLE=$(echo "$PR" | jq -r '.title')
-          # "bump x from 1.2.3 to 1.3.0" → compare versions; grouped PRs only ever
-          # contain minor/patch updates (see dependabot.yml), majors come alone.
+          # Classified from the PR title (dependabot/fetch-metadata needs the
+          # pull_request payload, which a workflow_run doesn't have). Fails
+          # closed: anything not recognised needs a human.
           UPDATE=unknown
           if [[ "$TITLE" =~ from[[:space:]]+([0-9]+)\.([0-9]+)\.([0-9]+).*[[:space:]]to[[:space:]]+([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
-            if [ "${BASH_REMATCH[1]}" != "${BASH_REMATCH[4]}" ]; then UPDATE=major; else UPDATE=minor-or-patch; fi
-          elif [[ "$TITLE" =~ [[:space:]]group[[:space:]] ]]; then
+            FROM_MAJOR=${BASH_REMATCH[1]}; FROM_MINOR=${BASH_REMATCH[2]}
+            TO_MAJOR=${BASH_REMATCH[4]}; TO_MINOR=${BASH_REMATCH[5]}
+            if [ "$FROM_MAJOR" != "$TO_MAJOR" ]; then UPDATE=major
+            # Below 1.0 a minor bump may break: treat it like a major.
+            elif [ "$FROM_MAJOR" = "0" ] && [ "$FROM_MINOR" != "$TO_MINOR" ]; then UPDATE=major
+            else UPDATE=minor-or-patch; fi
+          # Only the groups defined in dependabot.yml, which contain minor/patch updates only.
+          elif [[ "$TITLE" =~ bump\ the\ (production-dependencies|development-dependencies|github-actions)\ group ]]; then
             UPDATE=group
           fi
           {
@@ -60,6 +67,8 @@ jobs:
         with:
           client-id: ${{ vars.SC_AUTOMATION_CLIENT_ID }}
           private-key: ${{ secrets.SC_AUTOMATION_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
       - if: steps.pr.outputs.found == 'true' && (steps.pr.outputs.update == 'minor-or-patch' || steps.pr.outputs.update == 'group')
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -88,6 +97,13 @@ jobs:
       startsWith(github.event.workflow_run.head_branch, 'release-please--') &&
       github.event.workflow_run.head_repository.full_name == github.repository
     steps:
+      - id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.SC_AUTOMATION_CLIENT_ID }}
+          private-key: ${{ secrets.SC_AUTOMATION_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
@@ -98,11 +114,19 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          APP_LOGIN: app/${{ steps.app-token.outputs.app-slug }}
         run: |
           set -euo pipefail
-          NUMBER=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$HEAD_BRANCH" --state open \
-            --json number,headRefOid --jq "first(.[] | select(.headRefOid == \"$HEAD_SHA\")) | .number")
-          if [ -z "$NUMBER" ]; then echo "decision=none" >> "$GITHUB_OUTPUT"; exit 0; fi
+          PR=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$HEAD_BRANCH" --state open \
+            --json number,headRefOid,author \
+            --jq "first(.[] | select(.headRefOid == \"$HEAD_SHA\"))")
+          if [ -z "$PR" ]; then echo "decision=none" >> "$GITHUB_OUTPUT"; exit 0; fi
+          NUMBER=$(echo "$PR" | jq -r '.number')
+          # Only release PRs opened by the automation App, never a lookalike branch.
+          if [ "$(echo "$PR" | jq -r '.author.login')" != "$APP_LOGIN" ]; then
+            echo "PR #$NUMBER is not by $APP_LOGIN; ignoring."
+            echo "decision=none" >> "$GITHUB_OUTPUT"; exit 0
+          fi
           TAG=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || true)
           if [ -z "$TAG" ]; then
             DECISION="manual: first release"
@@ -111,12 +135,6 @@ jobs:
           fi
           echo "Release PR #$NUMBER: $DECISION"
           { echo "number=$NUMBER"; echo "decision=$DECISION"; } >> "$GITHUB_OUTPUT"
-      - id: app-token
-        if: steps.classify.outputs.decision != 'none'
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          client-id: ${{ vars.SC_AUTOMATION_CLIENT_ID }}
-          private-key: ${{ secrets.SC_AUTOMATION_PRIVATE_KEY }}
       - if: steps.classify.outputs.decision == 'auto'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -129,6 +147,8 @@ jobs:
           NUMBER: ${{ steps.classify.outputs.number }}
           DECISION: ${{ steps.classify.outputs.decision }}
         run: |
+          # A feature landed since auto-merge was enabled on an earlier head: take it back.
+          gh pr merge "$NUMBER" --repo "$GITHUB_REPOSITORY" --disable-auto 2>/dev/null || true
           MARKER="<!-- auto-merge:release-manual -->"
           if ! gh pr view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments[].body' | grep -qF "$MARKER"; then
             gh pr comment "$NUMBER" --repo "$GITHUB_REPOSITORY" \

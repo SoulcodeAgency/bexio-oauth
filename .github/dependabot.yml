@@ -8,8 +8,12 @@ updates:
       time: "04:00"
       timezone: Europe/Zurich
     open-pull-requests-limit: 10
-    # Runtime deps of the published package → fix(deps) → patch release.
-    # Everything else (dev deps, examples) → chore(deps) → no release.
+    # Raise ranges in package.json, so a runtime-dep fix also raises the
+    # minimum version our users get.
+    versioning-strategy: increase
+    # Production deps → fix(deps), dev deps → chore(deps). Whether a release
+    # happens is decided by path: only changes under packages/bexio-oauth
+    # (i.e. the published package's own deps) cut a release.
     commit-message:
       prefix: fix
       prefix-development: chore
