@@ -102,10 +102,42 @@ test("connect Bexio for a workspace, use it from a background job, keep it alive
     401,
   );
 
+  const lastRefreshed = async () =>
+    (
+      await db.query(
+        "SELECT last_refreshed_at FROM bexio_grants WHERE owner_id = 'workspace:a'",
+      )
+    ).rows[0].last_refreshed_at as Date;
+  const before = await lastRefreshed();
   await page.waitForTimeout(1_500); // BEXIO_IDLE_FOR is 1s in e2e
   const sweep = await request.get("/api/cron/refresh-idle", { headers: cron });
   expect(await sweep.json()).toMatchObject({ reauthRequired: 0, failed: 0 });
-  expect((await sweep.json()).refreshed).toBeGreaterThanOrEqual(1);
+  // The workspace grant itself was refreshed, not just the user's own one.
+  expect((await lastRefreshed()).getTime()).toBeGreaterThan(before.getTime());
+});
+
+test("signing in again replaces the tokens: still one grant, Better Auth's copy cleared again", async ({
+  page,
+}) => {
+  await signIn(page);
+  await page.getByTestId("sign-out").click();
+  await expect(page.getByTestId("sign-in")).toBeVisible();
+  const { rows: first } = await db.query(
+    "SELECT id, access_token FROM bexio_grants",
+  );
+  await signIn(page);
+  const { rows: second } = await db.query(
+    "SELECT id, access_token FROM bexio_grants",
+  );
+  expect(second).toHaveLength(1);
+  expect(second[0].id).toBe(first[0].id);
+  expect(second[0].access_token).not.toBe(first[0].access_token);
+  const { rows: accounts } = await db.query(
+    `SELECT "accessToken", "refreshToken", "idToken" FROM "account" WHERE "providerId" = 'bexio'`,
+  );
+  expect(accounts).toEqual([
+    { accessToken: null, refreshToken: null, idToken: null },
+  ]);
 });
 
 test("two workspaces connect the same Bexio user and company; disconnecting one keeps the other", async ({

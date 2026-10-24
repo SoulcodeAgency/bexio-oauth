@@ -21,8 +21,22 @@ export function getBexio(): BexioOAuth {
   }));
 }
 
-/** Owners in this demo: the signed-in user, and two workspaces everyone may manage. */
+/** The demo's workspaces; owner ids are `workspace:<slug>`. */
 export const WORKSPACES = ["a", "b"] as const;
 export const workspaceOwner = (slug: string) => `workspace:${slug}`;
-export const isWorkspaceOwner = (ownerId: string) =>
-  WORKSPACES.some((slug) => workspaceOwner(slug) === ownerId);
+
+/**
+ * May this user connect / disconnect Bexio for this owner? The one place the
+ * demo decides it; connect, callback and disconnect all go through here.
+ * A user always manages their own grant. In this demo every signed-in user
+ * may manage both workspaces. A real app checks workspace membership and role
+ * here.
+ */
+export function canManageOwner(
+  user: { id: string } | null | undefined,
+  ownerId: string,
+): boolean {
+  if (!user) return false;
+  if (ownerId === user.id) return true;
+  return WORKSPACES.some((slug) => workspaceOwner(slug) === ownerId);
+}

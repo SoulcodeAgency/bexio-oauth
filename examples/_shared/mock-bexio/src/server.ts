@@ -4,11 +4,6 @@ import { startMockBexio } from "./index.ts";
 const port = Number(process.env.MOCK_BEXIO_PORT ?? 9400);
 const mock = await startMockBexio({
   port,
-  host: process.env.MOCK_BEXIO_HOST ?? "127.0.0.1",
-  publicUrl: process.env.MOCK_BEXIO_PUBLIC_URL,
-  accessTokenTtlSeconds: process.env.MOCK_BEXIO_ACCESS_TTL
-    ? Number(process.env.MOCK_BEXIO_ACCESS_TTL)
-    : undefined,
   clientId: process.env.MOCK_BEXIO_CLIENT_ID ?? "example-client",
   clientSecret: process.env.MOCK_BEXIO_CLIENT_SECRET ?? "example-secret",
 });

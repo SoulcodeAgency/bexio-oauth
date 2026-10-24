@@ -18,6 +18,7 @@ async function companyName(grant: Grant): Promise<string> {
       },
       cache: "no-store",
     });
+    if (!res.ok) return `API call failed: HTTP ${res.status}`;
     const [profile] = (await res.json()) as { name: string }[];
     return `API call OK: ${profile?.name}`;
   } catch (error) {

@@ -35,3 +35,6 @@ CREATE INDEX IF NOT EXISTS bexio_grants_idle_idx
 -- Only the server (direct Postgres connection) may read grants: RLS on,
 -- no policies, so the anon and authenticated roles see nothing.
 ALTER TABLE bexio_grants ENABLE ROW LEVEL SECURITY;
+
+-- Defence in depth: the API roles get no privileges on the table at all.
+REVOKE ALL ON bexio_grants FROM anon, authenticated;

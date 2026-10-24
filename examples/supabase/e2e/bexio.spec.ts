@@ -50,15 +50,18 @@ test("connect Bexio for a Supabase user; RLS keeps bexio_grants unreadable for c
   expect(rows).toHaveLength(1);
 
   // …but neither the anon nor the signed-in user's role can read it through the API.
+  // RLS without policies + REVOKE: PostgREST refuses outright (42501), no rows leak.
   const asUser = await anon.from("bexio_grants").select("id, access_token");
-  expect(asUser.data ?? []).toEqual([]);
+  expect(asUser.data).toBeNull();
+  expect(asUser.error?.code).toBe("42501");
   const asAnon = await createClient(
     e2eEnv.NEXT_PUBLIC_SUPABASE_URL,
     e2eEnv.NEXT_PUBLIC_SUPABASE_ANON_KEY,
   )
     .from("bexio_grants")
     .select("id");
-  expect(asAnon.data ?? []).toEqual([]);
+  expect(asAnon.data).toBeNull();
+  expect(asAnon.error?.code).toBe("42501");
 
   await page.getByTestId("disconnect").click();
   await expect(page.getByTestId("grants")).toHaveText("Not connected.");

@@ -1,4 +1,4 @@
-import { getBexio, isWorkspaceOwner, workspaceOwner } from "@/lib/bexio";
+import { canManageOwner, getBexio, workspaceOwner } from "@/lib/bexio";
 import { getSessionFor } from "@/lib/session";
 
 // GET /api/bexio/connect?workspace=a: connect Bexio for a workspace.
@@ -8,9 +8,8 @@ export async function GET(request: Request) {
   const ownerId = workspaceOwner(
     new URL(request.url).searchParams.get("workspace") ?? "",
   );
-  // In a real app: check that this user may manage the workspace.
-  if (!isWorkspaceOwner(ownerId)) {
-    return new Response("Unknown workspace", { status: 404 });
+  if (!canManageOwner(session.user, ownerId)) {
+    return new Response("Not allowed", { status: 403 });
   }
   return getBexio().start(request, { ownerId, returnTo: "/" });
 }

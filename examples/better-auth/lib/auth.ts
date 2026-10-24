@@ -36,6 +36,13 @@ function buildAuth() {
       // OAuth callback. As soon as a session exists, hand them to the library
       // (which verifies, encrypts and refreshes them) and clear Better Auth's
       // copy, so the grant is the only place the Bexio tokens live.
+      //
+      // Deliberately route-independent (no `ctx.path` check): a new session
+      // with Bexio tokens on the account can only come from the OAuth
+      // callback, and the check survives Better Auth renaming its routes.
+      // Notes for copying this: keep `account.encryptOAuthTokens` off (the
+      // library encrypts), and `linkSocial` (linking Bexio to an existing
+      // user) creates no new session, so it needs the same hand-over.
       after: createAuthMiddleware(async (ctx) => {
         const session = ctx.context.newSession;
         if (!session) return;
@@ -46,20 +53,24 @@ function buildAuth() {
           (a) => a.providerId === "bexio" && a.accessToken,
         );
         if (!account?.accessToken) return;
-        await getBexio().saveGrant({
-          ownerId: session.user.id,
-          tokens: {
-            accessToken: account.accessToken,
-            refreshToken: account.refreshToken,
-            idToken: account.idToken,
-            expiresAt: account.accessTokenExpiresAt,
-          },
-        });
-        await ctx.context.internalAdapter.updateAccount(account.id, {
-          accessToken: null,
-          refreshToken: null,
-          idToken: null,
-        });
+        try {
+          await getBexio().saveGrant({
+            ownerId: session.user.id,
+            tokens: {
+              accessToken: account.accessToken,
+              refreshToken: account.refreshToken,
+              idToken: account.idToken,
+              expiresAt: account.accessTokenExpiresAt,
+            },
+          });
+        } finally {
+          // Even if saveGrant failed: never leave the tokens on Better Auth's row.
+          await ctx.context.internalAdapter.updateAccount(account.id, {
+            accessToken: null,
+            refreshToken: null,
+            idToken: null,
+          });
+        }
       }),
     },
   });

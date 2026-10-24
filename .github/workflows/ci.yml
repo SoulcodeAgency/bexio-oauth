@@ -16,6 +16,7 @@ jobs:
   check:
     name: check
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:17-alpine
@@ -33,14 +34,16 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
-      - run: npm run check
+      # Build first: the examples typecheck against the library's dist/.
       - run: npm run build
+      - run: npm run check
       - name: Package contents
         run: node scripts/check-pack.mjs
 
   e2e:
     name: e2e
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     services:
       postgres:
         image: postgres:17-alpine
@@ -67,8 +70,14 @@ jobs:
       - name: Better Auth example
         run: npm run test:e2e -w example-better-auth
       - name: Start local Supabase
-        run: npx supabase start
         working-directory: examples/supabase
+        run: |
+          npx supabase start
+          # Hand the stack's URL and keys to the tests instead of hard-coding them.
+          npx supabase status -o env | sed -E -n \
+            -e 's/^API_URL="?([^"]*)"?$/SUPABASE_URL=\1/p' \
+            -e 's/^ANON_KEY="?([^"]*)"?$/SUPABASE_ANON_KEY=\1/p' \
+            -e 's/^DB_URL="?([^"]*)"?$/SUPABASE_DB_URL=\1/p' >> "$GITHUB_ENV"
       - name: Supabase example
         run: npm run test:e2e -w example-supabase
       - if: failure()

@@ -1,9 +1,12 @@
 import { getBexio } from "@/lib/bexio";
 import { getUser } from "@/lib/supabase/server";
 
-// The redirect URI registered at Bexio. ownerId comes from the session again;
-// the library checks it equals the one used at start.
+// The redirect URI registered at Bexio. The owner recorded at start must be
+// the signed-in user; anything else (signed out, another user) redirects with
+// bexio_error=owner_mismatch.
 export async function GET(request: Request) {
   const user = await getUser();
-  return getBexio().callback(request, { ownerId: user?.id ?? "" });
+  return getBexio().callback(request, {
+    authorizeOwner: (ownerId) => user !== null && ownerId === user.id,
+  });
 }
