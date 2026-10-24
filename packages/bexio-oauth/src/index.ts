@@ -3,6 +3,7 @@ export {
   type AccessToken,
   type BexioOAuth,
   type BexioOAuthConfig,
+  type CallbackOptions,
   type CallbackResult,
   type ExternalTokens,
   type Grant,

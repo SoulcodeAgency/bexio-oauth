@@ -185,6 +185,33 @@ describe("callback", () => {
     expect(await store.findGrants({ ownerId: "victim-ws" })).toHaveLength(0);
   });
 
+  it("authorizeOwner: the app approves the owner recorded at start", async () => {
+    const bexio = client(mock, store);
+    const { request } = await authorize(bexio, mock, "workspace:a");
+    const seen: string[] = [];
+    const { grant } = await bexio.handleCallback(request, {
+      authorizeOwner: (ownerId) => {
+        seen.push(ownerId);
+        return ownerId === "workspace:a";
+      },
+    });
+    expect(seen).toEqual(["workspace:a"]);
+    expect(grant.ownerId).toBe("workspace:a");
+  });
+
+  it("authorizeOwner: a denied owner is owner_mismatch and saves nothing", async () => {
+    const bexio = client(mock, store);
+    const { request } = await authorize(bexio, mock, "workspace:attacker");
+    await expect(
+      bexio.handleCallback(request, { authorizeOwner: async () => false }),
+    ).rejects.toMatchObject({ code: "owner_mismatch" });
+    const res = await bexio.callback(request, { authorizeOwner: () => false });
+    expect(res.headers.get("location")).toContain("bexio_error=owner_mismatch");
+    expect(
+      await store.findGrants({ ownerId: "workspace:attacker" }),
+    ).toHaveLength(0);
+  });
+
   it("access_denied: the user cancels at Bexio, and callback redirects with the error code", async () => {
     const bexio = client(mock, store);
     const { request } = await authorize(bexio, mock, "ws-1", {

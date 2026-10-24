@@ -95,6 +95,17 @@ export interface RefreshIdleResult {
   failed: number;
 }
 
+/**
+ * How the callback checks the owner. Either the `ownerId` your app derives
+ * from the signed-in session (must equal the one passed to `start`), or
+ * `authorizeOwner`, which receives the owner recorded at `start` and returns
+ * whether the signed-in user may connect Bexio for it. Use the latter when
+ * one callback URL serves many owners (e.g. workspaces).
+ */
+export type CallbackOptions =
+  | { ownerId: string }
+  | { authorizeOwner: (ownerId: string) => boolean | Promise<boolean> };
+
 export interface CallbackResult {
   grant: Grant;
   returnTo: string;
@@ -472,10 +483,19 @@ export function createBexioOAuth(config: BexioOAuthConfig) {
      */
     async handleCallback(
       request: Request,
-      options: { ownerId: string },
+      options: CallbackOptions,
     ): Promise<CallbackResult> {
-      if (!options?.ownerId)
-        throw new BexioOAuthError("invalid_config", "ownerId is required");
+      if (
+        !options ||
+        ("ownerId" in options
+          ? !options.ownerId
+          : typeof options.authorizeOwner !== "function")
+      ) {
+        throw new BexioOAuthError(
+          "invalid_config",
+          "pass ownerId or authorizeOwner",
+        );
+      }
       const sealed = readCookie(request, FLOW_COOKIE);
       const flow = sealed
         ? ((await cipher.unseal(sealed, clock())) as FlowState | null)
@@ -487,10 +507,14 @@ export function createBexioOAuth(config: BexioOAuthConfig) {
           "flow cookie missing or expired, or state mismatch",
         );
       }
-      if (flow.o !== options.ownerId) {
+      const ownerAllowed =
+        "ownerId" in options
+          ? flow.o === options.ownerId
+          : (await options.authorizeOwner(flow.o)) === true;
+      if (!ownerAllowed) {
         throw new BexioOAuthError(
           "owner_mismatch",
-          "ownerId differs from the one used at start",
+          "the signed-in user may not connect Bexio for the owner used at start",
         );
       }
       const error = params.get("error");
@@ -543,7 +567,7 @@ export function createBexioOAuth(config: BexioOAuthConfig) {
         tokens.access_token,
       );
       const record = await saveTokens({
-        ownerId: options.ownerId,
+        ownerId: flow.o,
         claims,
         accessToken: tokens.access_token,
         refreshToken: tokens.refresh_token ?? null,
@@ -568,7 +592,7 @@ export function createBexioOAuth(config: BexioOAuthConfig) {
      */
     async callback(
       request: Request,
-      options: { ownerId: string },
+      options: CallbackOptions,
     ): Promise<Response> {
       const headers = new Headers({ "Cache-Control": "no-store" });
       headers.append("Set-Cookie", flowCookie("", 0));
