@@ -44,5 +44,7 @@ updates:
     cooldown:
       default-days: 7
     groups:
+      # Minor and patch only: majors arrive as separate PRs and need a human.
       github-actions:
         patterns: ["*"]
+        update-types: [minor, patch]

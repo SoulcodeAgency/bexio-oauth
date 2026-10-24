@@ -2,8 +2,9 @@ name: Auto-merge
 
 # Runs after CI finished green, in the default-branch context: unlike a
 # Dependabot-triggered pull_request run, it has the regular secrets and a full
-# token. Merges go through GitHub's native auto-merge (`--auto`), so they still
-# wait for every required check, and only for the commit CI just checked.
+# token. CI holds every required check, so when it completed successfully the
+# PR is mergeable: merge directly, and only the commit CI just checked
+# (--match-head-commit). No auto-merge state is left behind on the PR.
 # All writes run as the automation App: a merge made with GITHUB_TOKEN would
 # not trigger release.yml. See docs/development.md §5.4.
 
@@ -74,7 +75,7 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           NUMBER: ${{ steps.pr.outputs.number }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-        run: gh pr merge "$NUMBER" --repo "$GITHUB_REPOSITORY" --auto --squash --match-head-commit "$HEAD_SHA"
+        run: gh pr merge "$NUMBER" --repo "$GITHUB_REPOSITORY" --squash --match-head-commit "$HEAD_SHA"
       - if: steps.pr.outputs.found == 'true' && (steps.pr.outputs.update == 'major' || steps.pr.outputs.update == 'unknown')
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -115,6 +116,7 @@ jobs:
           HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           APP_LOGIN: app/${{ steps.app-token.outputs.app-slug }}
+          APP_BOT: ${{ steps.app-token.outputs.app-slug }}[bot]
         run: |
           set -euo pipefail
           PR=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$HEAD_BRANCH" --state open \
@@ -122,10 +124,17 @@ jobs:
             --jq "first(.[] | select(.headRefOid == \"$HEAD_SHA\"))")
           if [ -z "$PR" ]; then echo "decision=none" >> "$GITHUB_OUTPUT"; exit 0; fi
           NUMBER=$(echo "$PR" | jq -r '.number')
-          # Only release PRs opened by the automation App, never a lookalike branch.
+          # Only release PRs opened by the automation App, never a lookalike
+          # branch, and only when the App also made the head commit (nobody
+          # pushed onto its branch).
           if [ "$(echo "$PR" | jq -r '.author.login')" != "$APP_LOGIN" ]; then
             echo "PR #$NUMBER is not by $APP_LOGIN; ignoring."
             echo "decision=none" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          HEAD_AUTHOR=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA" --jq '.author.login // ""')
+          if [ "$HEAD_AUTHOR" != "$APP_BOT" ]; then
+            echo "decision=manual: head commit not made by the release App" >> "$GITHUB_OUTPUT"
+            echo "number=$NUMBER" >> "$GITHUB_OUTPUT"; exit 0
           fi
           TAG=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || true)
           if [ -z "$TAG" ]; then
@@ -140,15 +149,13 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           NUMBER: ${{ steps.classify.outputs.number }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-        run: gh pr merge "$NUMBER" --repo "$GITHUB_REPOSITORY" --auto --squash --match-head-commit "$HEAD_SHA"
+        run: gh pr merge "$NUMBER" --repo "$GITHUB_REPOSITORY" --squash --match-head-commit "$HEAD_SHA"
       - if: startsWith(steps.classify.outputs.decision, 'manual')
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           NUMBER: ${{ steps.classify.outputs.number }}
           DECISION: ${{ steps.classify.outputs.decision }}
         run: |
-          # A feature landed since auto-merge was enabled on an earlier head: take it back.
-          gh pr merge "$NUMBER" --repo "$GITHUB_REPOSITORY" --disable-auto 2>/dev/null || true
           MARKER="<!-- auto-merge:release-manual -->"
           if ! gh pr view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments[].body' | grep -qF "$MARKER"; then
             gh pr comment "$NUMBER" --repo "$GITHUB_REPOSITORY" \
