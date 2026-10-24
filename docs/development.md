@@ -2,7 +2,7 @@
 
 > **Status: draft for v0.1.** It describes the intended setup; once the workflows exist, this file becomes the reference.
 
-How to work on `@soulcode/bexio-oauth`: repo layout, local setup, tests, and how a change travels from a pull request to npm. To *use* the library, read the [integration guide](integration.md) instead.
+How to work on `@soulcode/bexio-oauth`: repo layout, local setup, tests, and how a change travels from a pull request to npm. To _use_ the library, read the [integration guide](integration.md) instead.
 
 ---
 
@@ -37,12 +37,12 @@ Integration and e2e tests never call the real Bexio. They use `examples/_shared/
 
 ## 3. Tests
 
-| Layer | Where | What it covers | Needs |
-|---|---|---|---|
-| Unit | `packages/bexio-oauth/src/**/*.test.ts` | flows, errors, encryption, claim and role mapping, CLI | nothing |
-| Integration | `packages/bexio-oauth/test/` | Postgres store, refresh lock under concurrency, rotation, `refreshIdle` | Postgres (Docker), mock-bexio |
-| End-to-end | `examples/*/e2e/` | real auth frameworks + the library, in a browser (Playwright) | example app, mock-bexio |
-| Manual | `examples/README.md` checklist | the same flows against live Bexio | your Bexio app credentials; once per release candidate |
+| Layer       | Where                                   | What it covers                                                          | Needs                                                  |
+| ----------- | --------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------ |
+| Unit        | `packages/bexio-oauth/src/**/*.test.ts` | flows, errors, encryption, claim and role mapping, CLI                  | nothing                                                |
+| Integration | `packages/bexio-oauth/test/`            | Postgres store, refresh lock under concurrency, rotation, `refreshIdle` | Postgres (Docker), mock-bexio                          |
+| End-to-end  | `examples/*/e2e/`                       | real auth frameworks + the library, in a browser (Playwright)           | example app, mock-bexio                                |
+| Manual      | `examples/README.md` checklist          | the same flows against live Bexio                                       | your Bexio app credentials; once per release candidate |
 
 All automated layers run on every pull request. There are no nightly or scheduled test runs.
 
@@ -50,12 +50,12 @@ All automated layers run on every pull request. There are no nightly or schedule
 
 - **Conventional Commits, enforced on PR titles.** PRs are squash-merged, so the PR title becomes the commit on `main`, and release-please reads those commits to decide the next version and write the changelog.
 
-  | Title prefix | Effect |
-  |---|---|
-  | `feat:` | minor release (0.x: minor) |
-  | `fix:`, `perf:`, `fix(deps):` | patch release |
-  | `feat!:` / `BREAKING CHANGE:` | major release (before 1.0: minor, via `bump-minor-pre-major`) |
-  | `chore:`, `docs:`, `test:`, `ci:`, `refactor:`, `chore(deps):` | no release |
+  | Title prefix                                                   | Effect                                                        |
+  | -------------------------------------------------------------- | ------------------------------------------------------------- |
+  | `feat:`                                                        | minor release (0.x: minor)                                    |
+  | `fix:`, `perf:`, `fix(deps):`                                  | patch release                                                 |
+  | `feat!:` / `BREAKING CHANGE:`                                  | major release (before 1.0: minor, via `bump-minor-pre-major`) |
+  | `chore:`, `docs:`, `test:`, `ci:`, `refactor:`, `chore(deps):` | no release                                                    |
 
 - **The integration guide is the spec.** A PR that changes public behavior updates `docs/integration.md` in the same PR.
 - **No references to specific downstream products** in code, docs, examples or table names. Examples use "user", "workspace", "your app".
@@ -64,11 +64,11 @@ All automated layers run on every pull request. There are no nightly or schedule
 
 Three workflows:
 
-| Workflow | Trigger | Job |
-|---|---|---|
-| `ci.yml` | every PR, push to `main` | `npm run check`, examples e2e, PR-title check |
-| `release.yml` | push to `main` | release-please; publish to npm when a release was created |
-| `auto-merge.yml` | CI finished successfully | auto-merge eligible Dependabot and release PRs |
+| Workflow         | Trigger                  | Job                                                       |
+| ---------------- | ------------------------ | --------------------------------------------------------- |
+| `ci.yml`         | every PR, push to `main` | `npm run check`, examples e2e, PR-title check             |
+| `release.yml`    | push to `main`           | release-please; publish to npm when a release was created |
+| `auto-merge.yml` | CI finished successfully | auto-merge eligible Dependabot and release PRs            |
 
 Every write to the repo (opening the release PR, merging, tagging) runs as the org's **`soulcode-automation` GitHub App**, not as `GITHUB_TOKEN`. GitHub starts no workflows from events made with `GITHUB_TOKEN`: CI would never run on the release PR, and a merge would never trigger `release.yml`. The App's client id is the repo variable `SC_AUTOMATION_CLIENT_ID`; its private key is the secret `SC_AUTOMATION_PRIVATE_KEY`. Forks need their own App, or they can skip releasing altogether.
 
@@ -108,7 +108,7 @@ flowchart LR
     R -->|no| X["blocked"]
 ```
 
-The `main` ruleset requires all three checks, allows squash merges only, and blocks direct pushes (except release-please's own release branch, via the App). Auto-merge can never skip a check: it only asks GitHub to merge *once the required checks pass*.
+The `main` ruleset requires all three checks, allows squash merges only, and blocks direct pushes (except release-please's own release branch, via the App). Auto-merge can never skip a check: it only asks GitHub to merge _once the required checks pass_.
 
 ### 5.3 Release (`release.yml`)
 
@@ -197,6 +197,7 @@ npm publish -w packages/bexio-oauth --access public   # with 2FA
 ```
 
 Then, on npmjs.com → package → Settings:
+
 1. Add a trusted publisher: GitHub Actions, repo `SoulcodeAgency/bexio-oauth`, workflow `release.yml`, environment `npm`.
 2. Set publishing access to **"Require two-factor authentication and disallow tokens"**.
 

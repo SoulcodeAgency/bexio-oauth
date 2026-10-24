@@ -1,0 +1,14 @@
+# @soulcode/bexio-oauth
+
+> Bexio OAuth token custody for Node apps: connect Bexio accounts (OIDC authorization code + PKCE), store tokens encrypted (JWE) in Postgres, and get a valid access token anywhere, with refreshes coordinated across instances. Not an auth framework: login stays with the app's own auth framework, which can hand tokens over via saveGrant().
+
+## Docs
+
+- [Integration guide](https://github.com/SoulcodeAgency/bexio-oauth/blob/main/docs/integration.md): concepts (grant, owner, role, status), configuration, connect flow, getAccessToken, background jobs, errors, security model, data model.
+- [Development guide](https://github.com/SoulcodeAgency/bexio-oauth/blob/main/docs/development.md): repo layout, tests, CI/CD and release process.
+- [Package README](https://github.com/SoulcodeAgency/bexio-oauth/blob/main/packages/bexio-oauth/README.md): install and quickstart.
+
+## Examples
+
+- [Better Auth on Postgres](https://github.com/SoulcodeAgency/bexio-oauth/tree/main/examples/better-auth)
+- [Supabase Auth](https://github.com/SoulcodeAgency/bexio-oauth/tree/main/examples/supabase)
