@@ -1,0 +1,21 @@
+{
+  "name": "mock-bexio",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A mock of Bexio's OIDC identity provider and the bits of its API the library uses. For tests only.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "node src/server.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "jose": "^6.2.13"
+  },
+  "devDependencies": {
+    "vitest": "5.0.5"
+  }
+}
