@@ -41,7 +41,13 @@ export interface MockUser {
 export interface MockBexioOptions {
   /** 0 picks a free port. */
   port?: number;
+  /** Interface to listen on. Default 127.0.0.1; use 0.0.0.0 to be reachable from containers. */
   host?: string;
+  /**
+   * Base URL clients use, if different from the listen address (e.g.
+   * http://host.docker.internal:9400 when a container must reach the mock).
+   */
+  publicUrl?: string;
   /** Advertise a revocation endpoint in discovery. Default true. */
   revocationEndpoint?: boolean;
   clientId?: string;
@@ -565,19 +571,22 @@ export async function startMockBexio(
     return send(res, 404, { error: "not_found" });
   }
 
-  const server = createServer((req, res) => {
+  const listener = (req: IncomingMessage, res: ServerResponse) => {
     handle(req, res).catch((error: unknown) => {
       send(res, 500, {
         error: "server_error",
         error_description: String(error),
       });
     });
-  });
+  };
+  const server = createServer(listener);
   await new Promise<void>((resolve) =>
     server.listen(options.port ?? 0, options.host ?? "127.0.0.1", resolve),
   );
   const { port } = server.address() as AddressInfo;
-  base = `http://${options.host ?? "127.0.0.1"}:${port}`;
+  base =
+    options.publicUrl?.replace(/\/$/, "") ??
+    `http://${options.host && options.host !== "0.0.0.0" ? options.host : "127.0.0.1"}:${port}`;
   issuer = `${base}/realms/bexio`;
 
   const api: MockBexio = {
