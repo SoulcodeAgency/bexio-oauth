@@ -456,6 +456,21 @@ describe.each(backends)("$name store", ({ make }) => {
       }
     });
 
+    it("reports a broken signing-keys response (503) as idp_error", async () => {
+      const fetchImpl: typeof fetch = (input, init) =>
+        String(input instanceof Request ? input.url : input).endsWith("/certs")
+          ? Promise.resolve(new Response("unavailable", { status: 503 }))
+          : fetch(input, init);
+      const bexio = client(mock, store, { fetch: fetchImpl });
+      const tokens = await mock.issueTokens({ sub: ADA });
+      await expect(
+        bexio.saveGrant({
+          ownerId: "u",
+          tokens: { accessToken: tokens.access_token },
+        }),
+      ).rejects.toMatchObject({ code: "idp_error" });
+    });
+
     it("reports unreachable signing keys as idp_error, not as a bad token", async () => {
       const fetchImpl: typeof fetch = (input, init) =>
         String(input instanceof Request ? input.url : input).endsWith("/certs")
@@ -606,7 +621,7 @@ describe.each(backends)("$name store", ({ make }) => {
   describe("configuration", () => {
     it("refuses a refresh lock TTL shorter than one refresh can take", () => {
       expect(() => client(mock, store, { refreshLockTtl: "5s" })).toThrow(
-        /at least 20s/,
+        /at least 30s/,
       );
     });
   });
@@ -713,6 +728,23 @@ describe.each(backends)("$name store", ({ make }) => {
   });
 
   describe("refreshIdle", () => {
+    it("reports idle grants as failed instead of throwing when Bexio is unreachable", async () => {
+      const clock = testClock();
+      await connect(client(mock, store, { clock: clock.now }), mock, "idle");
+      clock.advance(8 * 86_400_000);
+      // A fresh client (no cached discovery) whose requests to Bexio all fail.
+      const offline = client(mock, store, {
+        clock: clock.now,
+        fetch: () => Promise.reject(new TypeError("network down")),
+      });
+      expect(await offline.refreshIdle({ idleFor: "7d" })).toEqual({
+        refreshed: 0,
+        skipped: 0,
+        reauthRequired: 0,
+        failed: 1,
+      });
+    });
+
     it("skips idle grants another process is refreshing", async () => {
       const clock = testClock();
       const bexio = client(mock, store, { clock: clock.now });

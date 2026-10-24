@@ -131,8 +131,10 @@ jobs:
             echo "PR #$NUMBER is not by $APP_LOGIN; ignoring."
             echo "decision=none" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          HEAD_AUTHOR=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA" --jq '.author.login // ""')
-          if [ "$HEAD_AUTHOR" != "$APP_BOT" ]; then
+          # author/committer logins come from commit emails, so also require the
+          # signature GitHub adds to commits the App makes through the API.
+          HEAD=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA" \n            --jq '[.author.login // "", .committer.login // "", (.commit.verification.verified | tostring)] | join(" ")')
+          if [ "$HEAD" != "$APP_BOT $APP_BOT true" ] && [ "$HEAD" != "$APP_BOT web-flow true" ]; then
             echo "decision=manual: head commit not made by the release App" >> "$GITHUB_OUTPUT"
             echo "number=$NUMBER" >> "$GITHUB_OUTPUT"; exit 0
           fi

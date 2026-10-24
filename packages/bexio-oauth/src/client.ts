@@ -123,7 +123,7 @@ const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 /** Per HTTP request to Bexio. Kept well below the default refresh lock TTL. */
 const HTTP_TIMEOUT_SECONDS = 10;
 const SIGNING_ALGORITHMS = ["RS256", "PS256", "ES256"];
-const MIN_LOCK_TTL_MS = 20_000;
+const MIN_LOCK_TTL_MS = 30_000;
 
 /**
  * A safe summary of an upstream error for `BexioOAuthError.cause`: the OAuth
@@ -251,7 +251,8 @@ export function createBexioOAuth(config: BexioOAuthConfig) {
     " ",
   );
   const lockTtlMs = toMs(config.refreshLockTtl ?? "30s", "refreshLockTtl");
-  // A refresh makes up to two Bexio calls inside the lock (token 10 s, role 5 s).
+  // One refresh makes up to three Bexio calls inside the lock: token (10 s),
+  // the JWKS fetch for the refreshed ID token (10 s), and the role (5 s).
   if (lockTtlMs < MIN_LOCK_TTL_MS) {
     throw new BexioOAuthError(
       "invalid_config",
@@ -709,9 +710,12 @@ export function createBexioOAuth(config: BexioOAuthConfig) {
           return payload as ClaimBag;
         } catch (error) {
           // Not getting Bexio's keys is an outage, not a bad token.
+          // (jose reports a bad JWKS response, e.g. a 503, as its generic error.)
           if (
             error instanceof joseErrors.JWKSTimeout ||
-            error instanceof TypeError
+            error instanceof TypeError ||
+            (error instanceof joseErrors.JOSEError &&
+              error.code === "ERR_JOSE_GENERIC")
           ) {
             throw new BexioOAuthError(
               "idp_error",
@@ -801,10 +805,16 @@ export function createBexioOAuth(config: BexioOAuthConfig) {
         if (locked) {
           const refreshed = await refreshLocked(locked, window.lockToken);
           if (refreshed) return issue(refreshed);
+          // Lost the lock to a reconnect or another refresher: look at their
+          // result before anything else (it may be fresh, or reauth_required).
+          const current = await store.getGrant(record.id);
+          if (!current)
+            throw new BexioOAuthError("not_connected", "grant was deleted");
+          record = current;
+          continue;
         }
 
-        // Someone else is refreshing (or just did, or we lost the lock to
-        // them): wait for their result.
+        // Someone else is refreshing (or just did): wait for their result.
         if (clock().getTime() > deadline) {
           throw new BexioOAuthError(
             "idp_error",
@@ -867,7 +877,14 @@ export function createBexioOAuth(config: BexioOAuthConfig) {
         refreshedBefore,
         limit: options.limit ?? 500,
       });
-      if (idle.length > 0) await oidcConfig();
+      if (idle.length === 0) return result;
+      try {
+        await oidcConfig();
+      } catch {
+        // Bexio unreachable: report, don't throw; the next run retries.
+        result.failed = idle.length;
+        return result;
+      }
       for (const grant of idle) {
         const window = lockWindow(clock());
         const locked = await store.acquireRefreshLock({
