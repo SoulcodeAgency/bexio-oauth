@@ -38,6 +38,46 @@ jobs:
       - name: Package contents
         run: node scripts/check-pack.mjs
 
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      # Better Auth example (plain Postgres). The Supabase example uses its own local stack.
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+        working-directory: examples/better-auth
+      - name: Better Auth example
+        run: npm run test:e2e -w example-better-auth
+      - name: Start local Supabase
+        run: npx supabase start
+        working-directory: examples/supabase
+      - name: Supabase example
+        run: npm run test:e2e -w example-supabase
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-traces
+          path: examples/*/test-results/
+          if-no-files-found: ignore
+
   pr-title:
     name: pr-title
     if: github.event_name == 'pull_request'
