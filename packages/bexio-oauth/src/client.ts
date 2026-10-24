@@ -1,11 +1,12 @@
+import { randomUUID } from "node:crypto";
 import * as oidc from "openid-client";
 import {
-  createLocalJWKSet,
+  createRemoteJWKSet,
+  customFetch as joseCustomFetch,
   decodeJwt,
-  errors as joseErrors,
   jwtVerify,
 } from "jose";
-import type { JSONWebKeySet, JWTPayload } from "jose";
+import type { JWTPayload } from "jose";
 import {
   BASE_SCOPES,
   BEXIO_API_BASE_URL,
@@ -118,6 +119,34 @@ const FLOW_TTL_SECONDS = 600;
 /** Refresh a little before the access token really expires. */
 const EXPIRY_SKEW_MS = 30_000;
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+/** Per HTTP request to Bexio. Kept well below the default refresh lock TTL. */
+const HTTP_TIMEOUT_SECONDS = 10;
+const SIGNING_ALGORITHMS = ["RS256", "PS256", "ES256"];
+
+/**
+ * A safe summary of an upstream error for `BexioOAuthError.cause`: the OAuth
+ * error code and HTTP status, never response bodies or token values.
+ */
+function describe(error: unknown): {
+  name: string;
+  error?: string;
+  status?: number;
+} {
+  if (error instanceof oidc.ResponseBodyError) {
+    return { name: error.name, error: error.error, status: error.status };
+  }
+  if (error instanceof oidc.AuthorizationResponseError) {
+    return { name: error.name, error: error.error };
+  }
+  if (error instanceof Error) {
+    const code = (error as { code?: unknown }).code;
+    return {
+      name: error.name,
+      ...(typeof code === "string" ? { error: code } : {}),
+    };
+  }
+  return { name: "unknown" };
+}
 
 interface FlowState extends JWTPayload {
   /** state */ s: string;
@@ -147,20 +176,31 @@ function toGrant(r: GrantRecord): Grant {
   };
 }
 
-/** Only same-origin relative paths: blocks open redirects via `returnTo`. */
+const RETURN_TO_BASE = "https://return-to.invalid";
+
+/**
+ * Only same-origin relative paths: blocks open redirects via `returnTo`.
+ * Parsed with the URL parser (the same one the redirect will go through), so
+ * tricks like `/\t/evil.example` are caught, and normalized to path+query+hash.
+ */
 function safeReturnTo(value: string | undefined, fallback: string): string {
   if (!value) return fallback;
-  if (
-    !value.startsWith("/") ||
-    value.startsWith("//") ||
-    value.includes("\\")
-  ) {
-    throw new BexioOAuthError(
+  const invalid = () =>
+    new BexioOAuthError(
       "invalid_config",
       "returnTo must be a relative path like /settings",
     );
+  // eslint-disable-next-line no-control-regex
+  if (!value.startsWith("/") || /[\u0000-\u001f\\]/.test(value))
+    throw invalid();
+  let url: URL;
+  try {
+    url = new URL(value, RETURN_TO_BASE);
+  } catch {
+    throw invalid();
   }
-  return value;
+  if (url.origin !== RETURN_TO_BASE) throw invalid();
+  return `${url.pathname}${url.search}${url.hash}`;
 }
 
 function readCookie(request: Request, name: string): string | null {
@@ -219,6 +259,8 @@ export function createBexioOAuth(config: BexioOAuthConfig) {
     discovered ??= oidc
       .discovery(issuerUrl, config.clientId, config.clientSecret, undefined, {
         execute: insecure ? [oidc.allowInsecureRequests] : [],
+        // Well below the refresh lock TTL, so a slow IdP can't outlive the lock.
+        timeout: HTTP_TIMEOUT_SECONDS,
         [oidc.customFetch]: (url: string, options: RequestInit) =>
           fetchImpl(url, options),
       })
@@ -228,36 +270,31 @@ export function createBexioOAuth(config: BexioOAuthConfig) {
         oidc.enableNonRepudiationChecks(c);
         return c;
       })
-      .catch(() => {
+      .catch((cause: unknown) => {
         discovered = undefined;
         throw new BexioOAuthError(
           "idp_error",
           `OIDC discovery failed for ${issuer}`,
+          { cause: describe(cause) },
         );
       });
     return discovered;
   }
 
-  // Bexio's signing keys, fetched through `fetchImpl` and refetched once when a
-  // token names an unknown key id (key rotation).
-  let jwks: ReturnType<typeof createLocalJWKSet> | undefined;
-  async function loadKeySet() {
-    const uri = (await oidcConfig()).serverMetadata().jwks_uri;
-    if (!uri)
-      throw new BexioOAuthError("idp_error", "issuer publishes no jwks_uri");
-    try {
-      const res = await fetchImpl(uri, {
-        headers: { Accept: "application/json" },
+  // Bexio's signing keys (cached, refetched on an unknown key id, with a
+  // timeout and a cooldown so a bad token can't hammer the issuer).
+  let jwks: ReturnType<typeof createRemoteJWKSet> | undefined;
+  async function keySet() {
+    if (!jwks) {
+      const uri = (await oidcConfig()).serverMetadata().jwks_uri;
+      if (!uri)
+        throw new BexioOAuthError("idp_error", "issuer publishes no jwks_uri");
+      jwks = createRemoteJWKSet(new URL(uri), {
+        timeoutDuration: HTTP_TIMEOUT_SECONDS * 1000,
+        [joseCustomFetch]: fetchImpl,
       });
-      if (!res.ok) throw new Error(String(res.status));
-      jwks = createLocalJWKSet((await res.json()) as JSONWebKeySet);
-      return jwks;
-    } catch {
-      throw new BexioOAuthError(
-        "idp_error",
-        "could not load the issuer's signing keys",
-      );
     }
+    return jwks;
   }
 
   // ---- Grants ----------------------------------------------------------------
@@ -340,10 +377,17 @@ export function createBexioOAuth(config: BexioOAuthConfig) {
     );
   }
 
-  /** Refreshes a grant whose lock the caller holds. */
-  async function refreshLocked(record: GrantRecord): Promise<GrantRecord> {
+  /**
+   * Refreshes a grant whose lock the caller holds (`lockToken`). Every write
+   * is fenced by the token: if the lock was lost (expired and taken over, or
+   * the grant was reconnected meanwhile), the write changes nothing.
+   */
+  async function refreshLocked(
+    record: GrantRecord,
+    lockToken: string,
+  ): Promise<GrantRecord> {
     if (!record.refreshToken) {
-      await store.markReauthRequired(record.id, clock());
+      await store.markReauthRequired(record.id, lockToken, clock());
       throw new BexioOAuthError(
         "reauth_required",
         "grant has no refresh token; reconnect required",
@@ -353,8 +397,9 @@ export function createBexioOAuth(config: BexioOAuthConfig) {
     try {
       refreshToken = await decryptFor(record, record.refreshToken);
     } catch (error) {
-      // Unreadable (e.g. its key was removed from the keyring): only a reconnect helps.
-      await store.markReauthRequired(record.id, clock());
+      // Usually a keyring mistake (a key removed too early): don't burn the
+      // grant, so restoring the key fixes it.
+      await store.releaseRefreshLock(record.id, lockToken);
       throw error;
     }
 
@@ -366,15 +411,18 @@ export function createBexioOAuth(config: BexioOAuthConfig) {
         error instanceof oidc.ResponseBodyError &&
         error.error === "invalid_grant"
       ) {
-        await store.markReauthRequired(record.id, clock());
+        await store.markReauthRequired(record.id, lockToken, clock());
         throw new BexioOAuthError(
           "reauth_required",
           "Bexio rejected the refresh token; reconnect required",
+          { cause: describe(error) },
         );
       }
-      await store.releaseRefreshLock(record.id);
+      await store.releaseRefreshLock(record.id, lockToken);
       if (isBexioOAuthError(error)) throw error;
-      throw new BexioOAuthError("idp_error", "token refresh failed");
+      throw new BexioOAuthError("idp_error", "token refresh failed", {
+        cause: describe(error),
+      });
     }
 
     const now = clock();
@@ -385,7 +433,7 @@ export function createBexioOAuth(config: BexioOAuthConfig) {
     );
     const expiresIn = tokens.expiresIn();
     const refreshExpiresIn = Number(tokens.refresh_expires_in);
-    const saved = await store.saveRefreshed(record.id, {
+    const saved = await store.saveRefreshed(record.id, lockToken, {
       accessToken: await cipher.encrypt(tokens.access_token, binding),
       refreshToken: tokens.refresh_token
         ? await cipher.encrypt(tokens.refresh_token, binding)
@@ -402,12 +450,19 @@ export function createBexioOAuth(config: BexioOAuthConfig) {
       role: await fetchRole(fetchImpl, apiBaseUrl, tokens.access_token),
       now,
     });
-    if (!saved)
-      throw new BexioOAuthError(
-        "not_connected",
-        "grant was deleted during refresh",
-      );
-    return saved;
+    if (saved) return saved;
+    // Lock lost while refreshing: someone reconnected, or our lock expired and
+    // another caller took over. Their write wins; use it if it is usable.
+    const current = await store.getGrant(record.id);
+    if (!current) {
+      throw new BexioOAuthError("not_connected", "grant was deleted");
+    }
+    if (current.status === "active" && isFresh(current, clock()))
+      return current;
+    throw new BexioOAuthError(
+      "idp_error",
+      "lost the refresh lock to a concurrent update; retry",
+    );
   }
 
   function isFresh(record: GrantRecord, now: Date): boolean {
@@ -429,6 +484,7 @@ export function createBexioOAuth(config: BexioOAuthConfig) {
     return {
       now,
       lockUntil: new Date(now.getTime() + lockTtlMs),
+      lockToken: randomUUID(),
     };
   }
 
@@ -545,17 +601,20 @@ export function createBexioOAuth(config: BexioOAuthConfig) {
           throw new BexioOAuthError(
             cause.error === "access_denied" ? "access_denied" : "idp_error",
             `Bexio returned ${cause.error}`,
+            { cause: describe(cause) },
           );
         }
         if (cause instanceof TypeError) {
           throw new BexioOAuthError(
             "idp_error",
             "Bexio token endpoint unreachable",
+            { cause: describe(cause) },
           );
         }
         throw new BexioOAuthError(
           "invalid_callback",
           "authorization code exchange or ID token validation failed",
+          { cause: describe(cause) },
         );
       }
 
@@ -636,38 +695,36 @@ export function createBexioOAuth(config: BexioOAuthConfig) {
         token: string,
         audience?: string,
       ): Promise<ClaimBag> => {
-        const options = {
-          issuer: expectedIssuer,
-          audience,
-          currentDate: clock(),
-        };
+        const keys = await keySet();
         try {
-          return (await jwtVerify(token, jwks ?? (await loadKeySet()), options))
-            .payload as ClaimBag;
+          const { payload } = await jwtVerify(token, keys, {
+            issuer: expectedIssuer,
+            audience,
+            algorithms: SIGNING_ALGORITHMS,
+            currentDate: clock(),
+          });
+          return payload as ClaimBag;
         } catch (error) {
-          if (isBexioOAuthError(error)) throw error;
-          if (error instanceof joseErrors.JWKSNoMatchingKey) {
-            try {
-              return (await jwtVerify(token, await loadKeySet(), options))
-                .payload as ClaimBag;
-            } catch (retryError) {
-              if (isBexioOAuthError(retryError)) throw retryError;
-            }
-          }
           throw new BexioOAuthError(
             "invalid_callback",
             "token signature, issuer or expiry check failed",
+            { cause: describe(error) },
           );
         }
       };
       const accessClaims = await verify(tokens.accessToken);
-      if (
-        typeof accessClaims.azp === "string" &&
-        accessClaims.azp !== config.clientId
-      ) {
+      // Must be an access token issued to this app: rejects tokens issued to
+      // another client (token substitution) and ID tokens passed as access tokens.
+      if (accessClaims.azp !== config.clientId) {
         throw new BexioOAuthError(
           "invalid_callback",
-          "access token was issued to a different client",
+          "access token was not issued to this client",
+        );
+      }
+      if (accessClaims.typ !== undefined && accessClaims.typ !== "Bearer") {
+        throw new BexioOAuthError(
+          "invalid_callback",
+          "tokens.accessToken is not an access token",
         );
       }
       const idClaims = tokens.idToken
@@ -719,12 +776,13 @@ export function createBexioOAuth(config: BexioOAuthConfig) {
         const now = clock();
         if (isFresh(record, now)) return issue(record);
 
+        const window = lockWindow(now);
         const locked = await store.acquireRefreshLock({
           id: record.id,
-          ...lockWindow(now),
+          ...window,
           accessExpiresBefore: new Date(now.getTime() + EXPIRY_SKEW_MS),
         });
-        if (locked) return issue(await refreshLocked(locked));
+        if (locked) return issue(await refreshLocked(locked, window.lockToken));
 
         // Someone else is refreshing (or just did): wait for their result.
         if (clock().getTime() > deadline) {
@@ -790,9 +848,10 @@ export function createBexioOAuth(config: BexioOAuthConfig) {
         limit: options.limit ?? 500,
       });
       for (const grant of idle) {
+        const window = lockWindow(clock());
         const locked = await store.acquireRefreshLock({
           id: grant.id,
-          ...lockWindow(clock()),
+          ...window,
           refreshedBefore,
         });
         if (!locked) {
@@ -800,13 +859,10 @@ export function createBexioOAuth(config: BexioOAuthConfig) {
           continue;
         }
         try {
-          await refreshLocked(locked);
+          await refreshLocked(locked, window.lockToken);
           result.refreshed++;
         } catch (error) {
-          if (
-            isBexioOAuthError(error, "reauth_required") ||
-            isBexioOAuthError(error, "decryption_failed")
-          ) {
+          if (isBexioOAuthError(error, "reauth_required")) {
             result.reauthRequired++;
           } else {
             result.failed++;

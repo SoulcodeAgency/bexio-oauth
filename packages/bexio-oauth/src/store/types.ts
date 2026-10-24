@@ -61,6 +61,12 @@ export interface LockRequest {
   id: string;
   now: Date;
   lockUntil: Date;
+  /**
+   * Random value identifying this lock holder. Writes that need the lock pass
+   * it back, so a holder whose lock expired (or was cleared by a reconnect)
+   * can't overwrite newer data.
+   */
+  lockToken: string;
   /** Lock only if the access token expires before this instant (lazy refresh)… */
   accessExpiresBefore?: Date;
   /** …or only if the grant was last refreshed before this instant (idle sweep). */
@@ -86,11 +92,19 @@ export interface GrantStore {
    * lock or the grant no longer needs a refresh.
    */
   acquireRefreshLock(request: LockRequest): Promise<GrantRecord | null>;
-  /** Stores refreshed tokens, sets `lastRefreshedAt`, and releases the lock. */
-  saveRefreshed(id: string, refresh: GrantRefresh): Promise<GrantRecord | null>;
-  /** Sets `status = reauth_required` and releases the lock. */
-  markReauthRequired(id: string, now: Date): Promise<void>;
-  releaseRefreshLock(id: string): Promise<void>;
+  /**
+   * Stores refreshed tokens, sets `lastRefreshedAt`, and releases the lock.
+   * Returns `null` (and changes nothing) unless `lockToken` still holds it.
+   */
+  saveRefreshed(
+    id: string,
+    lockToken: string,
+    refresh: GrantRefresh,
+  ): Promise<GrantRecord | null>;
+  /** Sets `status = reauth_required` and releases the lock, if `lockToken` holds it. */
+  markReauthRequired(id: string, lockToken: string, now: Date): Promise<void>;
+  /** Releases the lock, if `lockToken` holds it. */
+  releaseRefreshLock(id: string, lockToken: string): Promise<void>;
   deleteGrant(id: string): Promise<void>;
   /** Active grants last refreshed before `refreshedBefore`, oldest first. */
   listIdleGrants(query: {

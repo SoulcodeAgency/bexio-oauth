@@ -1,6 +1,7 @@
 /**
  * Every failure the library reports is a `BexioOAuthError` with a stable
- * `code`. Messages never contain token values.
+ * `code`. Messages never contain token values; `cause`, when set, is a safe
+ * summary of the upstream error (name, OAuth error code, HTTP status).
  */
 export type BexioOAuthErrorCode =
   /** Flow cookie missing, expired, or `state` does not match. */
@@ -27,8 +28,12 @@ export type BexioOAuthErrorCode =
 export class BexioOAuthError extends Error {
   readonly code: BexioOAuthErrorCode;
 
-  constructor(code: BexioOAuthErrorCode, message: string) {
-    super(message);
+  constructor(
+    code: BexioOAuthErrorCode,
+    message: string,
+    options?: { cause?: { name: string; error?: string; status?: number } },
+  ) {
+    super(message, options);
     this.name = "BexioOAuthError";
     this.code = code;
   }

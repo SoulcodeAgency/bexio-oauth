@@ -42,6 +42,8 @@ export interface MockBexioOptions {
   /** 0 picks a free port. */
   port?: number;
   host?: string;
+  /** Advertise a revocation endpoint in discovery. Default true. */
+  revocationEndpoint?: boolean;
   clientId?: string;
   clientSecret?: string;
   users?: MockUser[];
@@ -64,7 +66,7 @@ export interface NextLogin {
   /** Answer the next authorization request with this error, e.g. `access_denied`. */
   error?: string;
   /** Hand out a broken ID token for this login: wrong nonce, or signed with an unknown key. */
-  tamperIdToken?: "nonce" | "signature";
+  tamperIdToken?: "nonce" | "signature" | "issuer";
 }
 
 export interface MockBexio {
@@ -265,7 +267,7 @@ export async function startMockBexio(
           ...profileClaims(user, company),
         },
         accessTtl,
-        issuer,
+        tamper === "issuer" ? "https://evil.example/realms/bexio" : issuer,
         tamper === "signature" ? foreign.privateKey : privateKey,
       );
     }
@@ -367,7 +369,11 @@ export async function startMockBexio(
         authorization_endpoint: `${issuer}/protocol/openid-connect/auth`,
         token_endpoint: `${issuer}/protocol/openid-connect/token`,
         userinfo_endpoint: `${issuer}/protocol/openid-connect/userinfo`,
-        revocation_endpoint: `${issuer}/protocol/openid-connect/revoke`,
+        ...(options.revocationEndpoint === false
+          ? {}
+          : {
+              revocation_endpoint: `${issuer}/protocol/openid-connect/revoke`,
+            }),
         jwks_uri: `${issuer}/protocol/openid-connect/certs`,
         response_types_supported: ["code"],
         grant_types_supported: ["authorization_code", "refresh_token"],

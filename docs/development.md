@@ -64,11 +64,11 @@ All automated layers run on every pull request. There are no nightly or schedule
 
 Three workflows:
 
-| Workflow         | Trigger                  | Job                                                       |
-| ---------------- | ------------------------ | --------------------------------------------------------- |
-| `ci.yml`         | every PR, push to `main` | `npm run check`, examples e2e, PR-title check             |
-| `release.yml`    | push to `main`           | release-please; publish to npm when a release was created |
-| `auto-merge.yml` | CI finished successfully | auto-merge eligible Dependabot and release PRs            |
+| Workflow         | Trigger                  | Job                                                                   |
+| ---------------- | ------------------------ | --------------------------------------------------------------------- |
+| `ci.yml`         | every PR, push to `main` | `npm run check`, package-contents check, PR-title check, examples e2e |
+| `release.yml`    | push to `main`           | release-please; publish to npm when a release was created             |
+| `auto-merge.yml` | CI finished successfully | auto-merge eligible Dependabot and release PRs                        |
 
 Every write to the repo (opening the release PR, merging, tagging) runs as the org's **`soulcode-automation` GitHub App**, not as `GITHUB_TOKEN`. GitHub starts no workflows from events made with `GITHUB_TOKEN`: CI would never run on the release PR, and a merge would never trigger `release.yml`. The App's client id is the repo variable `SC_AUTOMATION_CLIENT_ID`; its private key is the secret `SC_AUTOMATION_PRIVATE_KEY`. Forks need their own App, or they can skip releasing altogether.
 
@@ -117,6 +117,7 @@ sequenceDiagram
     participant Main as push to main
     participant RP as release-please job (GitHub App)
     participant GH as GitHub
+    participant Ver as verify job (read-only)
     participant Pub as publish job (environment npm)
     participant NPM as npm registry
 
@@ -125,18 +126,20 @@ sequenceDiagram
         RP->>GH: open / update release PR<br/>(version bump + CHANGELOG)
     else the release PR was just merged
         RP->>GH: create tag vX.Y.Z + GitHub Release
-        RP-->>Pub: release_created = true
-        Pub->>Pub: checkout tag · npm ci · npm run check
-        Pub->>NPM: npm publish (OIDC trusted publishing)
+        RP-->>Ver: release_created = true
+        Ver->>Ver: checkout tag · npm ci · npm run check · npm pack
+        Ver-->>Pub: tarball (artifact)
+        Pub->>NPM: npm publish tarball (OIDC trusted publishing)
         NPM-->>Pub: published with provenance
     end
 ```
 
 - Both jobs live in **one** workflow on purpose. A separate "on release" workflow would never fire, because the release is created by automation. npm's trusted publisher is also bound to exactly this filename (`release.yml`) and environment (`npm`).
-- The publish job re-runs the full check on the tagged commit, so what ships is what was tested.
+- `verify` re-runs the full check on the tagged commit and packs the tarball, so what ships is what was tested. It has no publishing rights: a compromised dev dependency running during `npm ci` or the tests can't publish anything.
+- `publish` does no checkout and no `npm ci`. It downloads the verified tarball and publishes exactly that.
 - There is **no npm token** anywhere. npm trusts the GitHub Actions OIDC identity of `release.yml` in the `npm` environment. Provenance shows on the npm package page and links back to the exact workflow run.
 - Concurrency group `release`, never cancelled in progress, so two quick merges can't race on the release branch.
-- Least-privilege permissions per job: release-please gets `contents: write` and `pull-requests: write` (through the App token); publish gets `contents: read` and `id-token: write`. Trusted publishing needs npm CLI ≥ 11.5.1, so the job upgrades npm if the bundled one is older.
+- Least-privilege permissions per job: the App token is scoped to `contents: write` and `pull-requests: write`; `verify` gets `contents: read`; `publish` gets `contents: read` and `id-token: write`. Trusted publishing needs npm CLI ≥ 11.5.1, so `publish` installs a pinned npm (11.15.0).
 - release-please config (`release-please-config.json` + manifest):
   - one package, `packages/bexio-oauth`;
   - tags `vX.Y.Z` (`include-component-in-tag: false`);
@@ -151,17 +154,19 @@ flowchart TD
     W["workflow_run: CI completed"] --> S{"conclusion success?"}
     S -->|no| Stop["do nothing"]
     S -->|yes| Who{"PR source"}
-    Who -->|Dependabot| U{"update type<br/>dependabot/fetch-metadata"}
+    Who -->|Dependabot| U{"update type<br/>from the PR title"}
     U -->|"patch / minor / group"| AM["gh pr merge --auto --squash<br/>--match-head-commit, as App"]
-    U -->|major| Cm1["comment: needs human review"]
-    Who -->|"release-please--* branch"| RC{"every commit since last tag:<br/>author Dependabot AND fix(deps)?"}
+    U -->|"major, 0.x minor, unknown"| Cm1["comment: needs human review"]
+    Who -->|"release PR by the App"| RC{"every package commit since last tag:<br/>author Dependabot AND fix(deps)?"}
     RC -->|yes| AM
-    RC -->|no| Cm2["comment: feature release,<br/>merge manually"]
+    RC -->|no| Cm2["disable auto-merge, comment:<br/>feature release, merge manually"]
     Who -->|anything else| Stop
 ```
 
 - **Why `workflow_run` and not `pull_request`:** a run triggered by Dependabot on `pull_request` gets a read-only token and no regular secrets. `workflow_run` runs in the default-branch context, so the App key and the normal permissions are available.
-- **`--match-head-commit`** merges only the commit CI just checked. A new push to the PR cancels it.
+- **Update type from the PR title.** `dependabot/fetch-metadata` needs the `pull_request` payload, which a `workflow_run` doesn't have, so the workflow parses "bump x from 1.2.3 to 1.3.0". It fails closed: a major bump, a minor bump below 1.0, or a title it doesn't recognise needs a human. Grouped PRs are only trusted for the groups defined in `dependabot.yml`, which contain minor and patch updates only.
+- **`--match-head-commit`** asks GitHub to merge only the commit CI just checked.
+- **Release PRs are only considered when opened by the automation App**, never for another branch that happens to be named `release-please--…`. Only commits that touch `packages/bexio-oauth` count, the same ones release-please puts into the release (`scripts/release-classify.mjs`, unit-tested). When a release stops qualifying (a feature landed), the workflow disables auto-merge on the PR again.
 - **The human gate:** release PRs containing a `feat`, a human-written `fix` or a breaking change are never auto-merged. Merging those is the release decision. Releases made up only of dependency fixes (typically security updates) ship without waiting for anyone.
 
 ### 5.5 Dependabot
@@ -176,11 +181,14 @@ flowchart LR
         B2 -->|yes| B3["PR opened"]
     end
     A2 & B3 --> P{"commit prefix"}
-    P -->|"runtime deps: openid-client, jose"| F["fix(deps) → patch release"]
-    P -->|"dev deps, examples, GitHub Actions"| C["chore(deps) → no release"]
+    P -->|"production deps"| F["fix(deps)"]
+    P -->|"dev deps, GitHub Actions"| C["chore(deps)"]
+    F & C --> R{"touches packages/bexio-oauth?"}
+    R -->|"yes, fix(deps)"| Rel["patch release"]
+    R -->|"no, or chore"| NoRel["no release"]
 ```
 
-Version updates are grouped weekly. GitHub Actions are pinned by commit SHA and updated by Dependabot as well.
+Version updates are grouped weekly, with `versioning-strategy: increase`, so an update raises the range in `package.json` too. GitHub Actions are pinned by commit SHA and updated by Dependabot as well. The commit prefix alone doesn't decide a release: release-please only releases for changes under `packages/bexio-oauth`, so a `fix(deps)` bump of an example app's dependency cuts no release.
 
 The cooldown is supply-chain protection. An auto-merged, auto-published dependency bump reaches our users quickly, so routine updates wait long enough for a compromised release to be caught and pulled first. Security updates skip the wait on purpose.
 
@@ -209,5 +217,5 @@ Every release after that is automated.
 - [ ] `soulcode-automation` App installed on the repo (contents + pull-requests write); variable `SC_AUTOMATION_CLIENT_ID`, secret `SC_AUTOMATION_PRIVATE_KEY`.
 - [ ] "Allow auto-merge" enabled; "Dependabot security updates" enabled.
 - [ ] Environment `npm`, deployment branches restricted to `main`.
-- [ ] `main` ruleset: PRs only, squash only, required checks (`check`, `e2e`, `pr-title`), the App allowed to bypass for the release branch.
+- [ ] `main` ruleset: PRs only, squash only, required checks `check` and `pr-title` (plus `e2e` once the example apps land), the App allowed to bypass for the release branch.
 - [ ] npm: trusted publisher configured, tokens disallowed (after the bootstrap publish).

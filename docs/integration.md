@@ -275,7 +275,7 @@ await bexio.saveGrant({
 });
 ```
 
-`saveGrant` verifies before trusting any claim: the access token's (and, if given, the ID token's) signature against Bexio's published keys, the issuer, expiry, that the access token was issued to **your** client (`azp`), and that both tokens belong to the same user. If the tokens lack the company claims (some frameworks only pass the access token), it reads them from Bexio's userinfo endpoint. Then it saves the grant exactly like `callback` would and returns it. From then on, use `getAccessToken({ ownerId: user.id })` as usual.
+`saveGrant` verifies before trusting any claim: the access token's (and, if given, the ID token's) signature against Bexio's published keys, the issuer, expiry, that it really is an access token issued to **your** client (`azp` must equal your `clientId`; ID tokens are refused), and that both tokens belong to the same user. If the tokens lack the company claims (some frameworks only pass the access token), it reads them from Bexio's userinfo endpoint. Then it saves the grant exactly like `callback` would and returns it. From then on, use `getAccessToken({ ownerId: user.id })` as usual.
 
 `expiresAt` is optional; it defaults to the access token's `exp` claim.
 
@@ -322,7 +322,7 @@ export async function GET() {
 }
 ```
 
-`skipped` counts idle grants another process was refreshing at the same moment; `failed` counts refreshes that failed for a transient reason (they are retried on the next run). `limit` (default 500) caps how many grants one run handles.
+`skipped` counts idle grants another process was refreshing at the same moment; `failed` counts refreshes that failed for another reason, e.g. Bexio unreachable or a token that can't be decrypted (they are retried on the next run). `limit` (default 500) caps how many grants one run handles.
 
 Protect that route the way your platform protects cron routes (a secret header, for example).
 
@@ -344,25 +344,28 @@ Bexio rotates refresh tokens and rejects a refresh token that has already been u
 2. The winner refreshes, stores the new tokens and clears the lock.
 3. The others wait briefly, re-read the row, and use the winner's new token.
 4. If the winner crashes, the lock expires after `refreshLockTtl` and the next caller takes over.
+5. Every write by the lock holder carries a random lock token and only applies while that token still holds the lock. A holder whose lock expired, or whose grant was reconnected meanwhile, changes nothing; it re-reads the row and uses the newer tokens if they are valid.
+
+Every HTTP request to Bexio has a 10-second timeout (the permissions call 5 seconds), well inside the default 30-second lock. If you lower `refreshLockTtl`, keep it above 20 seconds.
 
 This works across processes, containers and serverless instances. All it relies on is the database.
 
 ## 11. Errors
 
-All errors are `BexioOAuthError` with a `code` (`isBexioOAuthError(err, "reauth_required")` narrows it). Token values never appear in messages. `callback` turns every code except `invalid_config` into a `bexio_error=<code>` redirect; other errors (e.g. the database is down) are thrown.
+All errors are `BexioOAuthError` with a `code` (`isBexioOAuthError(err, "reauth_required")` narrows it). Token values never appear in messages. For upstream failures, `cause` holds a safe summary (`name`, OAuth `error`, HTTP `status`). `callback` turns every code except `invalid_config` into a `bexio_error=<code>` redirect; other errors (e.g. the database is down) are thrown.
 
-| `code`              | Where                      | Meaning, and what to do                                                                                                                                     |
-| ------------------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `state_mismatch`    | callback                   | Cookie missing, expired, or `state` doesn't match. Usually a stale tab or a flow older than 10 min: start again.                                            |
-| `owner_mismatch`    | callback                   | The `ownerId` at callback differs from `start`. Possible CSRF; don't retry automatically.                                                                   |
-| `access_denied`     | callback                   | The user cancelled at Bexio.                                                                                                                                |
-| `invalid_callback`  | callback, saveGrant        | Bad code, nonce or token signature, or the wrong issuer.                                                                                                    |
-| `idp_error`         | any                        | Bexio returned an unexpected error or was unreachable. Retry later.                                                                                         |
-| `not_connected`     | getAccessToken, disconnect | The owner has no grant (for that company or grant id).                                                                                                      |
-| `ambiguous_grant`   | getAccessToken, disconnect | The owner has several grants; pass `companyId` or `grantId`.                                                                                                |
-| `reauth_required`   | getAccessToken             | The refresh token is dead; reconnect via §6.                                                                                                                |
-| `decryption_failed` | getAccessToken             | A stored token can't be decrypted: its key was removed from the keyring, or the ciphertext belongs to another grant. The grant is marked `reauth_required`. |
-| `invalid_config`    | any                        | A programming error: missing option, malformed keyring, `returnTo` that isn't a relative path.                                                              |
+| `code`              | Where                      | Meaning, and what to do                                                                                                                                                         |
+| ------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `state_mismatch`    | callback                   | Cookie missing, expired, or `state` doesn't match. Usually a stale tab or a flow older than 10 min: start again.                                                                |
+| `owner_mismatch`    | callback                   | The `ownerId` at callback differs from `start`. Possible CSRF; don't retry automatically.                                                                                       |
+| `access_denied`     | callback                   | The user cancelled at Bexio.                                                                                                                                                    |
+| `invalid_callback`  | callback, saveGrant        | Bad code, nonce or token signature, or the wrong issuer.                                                                                                                        |
+| `idp_error`         | any                        | Bexio returned an unexpected error or was unreachable. Retry later.                                                                                                             |
+| `not_connected`     | getAccessToken, disconnect | The owner has no grant (for that company or grant id).                                                                                                                          |
+| `ambiguous_grant`   | getAccessToken, disconnect | The owner has several grants; pass `companyId` or `grantId`.                                                                                                                    |
+| `reauth_required`   | getAccessToken             | The refresh token is dead; reconnect via §6.                                                                                                                                    |
+| `decryption_failed` | getAccessToken             | A stored token can't be decrypted: its key was removed from the keyring, or the ciphertext belongs to another grant. The grant is left as it is, so restoring the key fixes it. |
+| `invalid_config`    | any                        | A programming error: missing option, malformed keyring, `returnTo` that isn't a relative path.                                                                                  |
 
 ## 12. Security model
 
@@ -378,21 +381,21 @@ All errors are `BexioOAuthError` with a `code` (`isBexioOAuthError(err, "reauth_
 
 `bexio_grants` (simplified; the SQL files are authoritative):
 
-| Column                                          | Type          | Notes                                                                                                  |
-| ----------------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------ |
-| `id`                                            | `uuid` PK     |                                                                                                        |
-| `owner_id`                                      | `text`        | Your opaque owner.                                                                                     |
-| `bexio_company_id`                              | `text`        | Bexio's `company_id` claim.                                                                            |
-| `bexio_user_id`                                 | `text`        | OIDC `sub`.                                                                                            |
-| `bexio_company_user_id`                         | `integer`     | The user's id inside the company (Bexio's API uses it, e.g. for timesheets).                           |
-| `company_name`, `user_name`, `user_email`       | `text`        | For display; refreshed on connect.                                                                     |
-| `role`                                          | `text`        | `admin` \| `member`.                                                                                   |
-| `status`                                        | `text`        | `active` \| `reauth_required`.                                                                         |
-| `access_token`, `refresh_token`                 | `text`        | JWE compact strings.                                                                                   |
-| `access_expires_at`, `refresh_expires_at`       | `timestamptz` |                                                                                                        |
-| `scope`                                         | `text`        | Scopes actually granted.                                                                               |
-| `refresh_locked_until`                          | `timestamptz` | Refresh lock (§10).                                                                                    |
-| `last_refreshed_at`, `created_at`, `updated_at` | `timestamptz` | `last_refreshed_at` drives `refreshIdle`, so `getAccessToken` stays read-only when the token is valid. |
+| Column                                          | Type                  | Notes                                                                                                  |
+| ----------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------ |
+| `id`                                            | `uuid` PK             |                                                                                                        |
+| `owner_id`                                      | `text`                | Your opaque owner.                                                                                     |
+| `bexio_company_id`                              | `text`                | Bexio's `company_id` claim.                                                                            |
+| `bexio_user_id`                                 | `text`                | OIDC `sub`.                                                                                            |
+| `bexio_company_user_id`                         | `integer`             | The user's id inside the company (Bexio's API uses it, e.g. for timesheets).                           |
+| `company_name`, `user_name`, `user_email`       | `text`                | For display; refreshed on connect.                                                                     |
+| `role`                                          | `text`                | `admin` \| `member`.                                                                                   |
+| `status`                                        | `text`                | `active` \| `reauth_required`.                                                                         |
+| `access_token`, `refresh_token`                 | `text`                | JWE compact strings.                                                                                   |
+| `access_expires_at`, `refresh_expires_at`       | `timestamptz`         |                                                                                                        |
+| `scope`                                         | `text`                | Scopes actually granted.                                                                               |
+| `refresh_locked_until`, `refresh_lock_token`    | `timestamptz`, `text` | Refresh lock and its holder (§10).                                                                     |
+| `last_refreshed_at`, `created_at`, `updated_at` | `timestamptz`         | `last_refreshed_at` drives `refreshIdle`, so `getAccessToken` stays read-only when the token is valid. |
 
 Unique: `(owner_id, bexio_company_id, bexio_user_id)` (also serves lookups by owner). Partial index on `last_refreshed_at` for active grants (`refreshIdle`).
 

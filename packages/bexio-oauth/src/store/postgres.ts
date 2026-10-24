@@ -107,6 +107,7 @@ export function postgresStore(sql: SqlClient): GrantStore {
            refresh_expires_at = EXCLUDED.refresh_expires_at,
            scope = EXCLUDED.scope,
            refresh_locked_until = NULL,
+           refresh_lock_token = NULL,
            last_refreshed_at = EXCLUDED.last_refreshed_at,
            updated_at = EXCLUDED.updated_at
          RETURNING ${COLUMNS}`,
@@ -150,11 +151,12 @@ export function postgresStore(sql: SqlClient): GrantStore {
       id,
       now,
       lockUntil,
+      lockToken,
       accessExpiresBefore,
       refreshedBefore,
     }) {
       return one(
-        `UPDATE bexio_grants SET refresh_locked_until = $3
+        `UPDATE bexio_grants SET refresh_locked_until = $3, refresh_lock_token = $6
          WHERE id = $1
            AND status = 'active'
            AND (refresh_locked_until IS NULL OR refresh_locked_until <= $2)
@@ -169,11 +171,14 @@ export function postgresStore(sql: SqlClient): GrantStore {
           lockUntil,
           accessExpiresBefore ?? null,
           refreshedBefore ?? null,
+          lockToken,
         ],
       );
     },
 
-    async saveRefreshed(id, r) {
+    // Holder writes are fenced by refresh_lock_token: a holder whose lock
+    // expired or was cleared by a reconnect matches no row and changes nothing.
+    async saveRefreshed(id, lockToken, r) {
       return one(
         `UPDATE bexio_grants SET
            access_token = $2,
@@ -184,9 +189,10 @@ export function postgresStore(sql: SqlClient): GrantStore {
            role = COALESCE($7, role),
            status = 'active',
            refresh_locked_until = NULL,
+           refresh_lock_token = NULL,
            last_refreshed_at = $8,
            updated_at = $8
-         WHERE id = $1
+         WHERE id = $1 AND refresh_lock_token = $9
          RETURNING ${COLUMNS}`,
         [
           id,
@@ -197,22 +203,25 @@ export function postgresStore(sql: SqlClient): GrantStore {
           r.scope,
           r.role,
           r.now,
+          lockToken,
         ],
       );
     },
 
-    async markReauthRequired(id, now) {
+    async markReauthRequired(id, lockToken, now) {
       await sql.query(
-        `UPDATE bexio_grants SET status = 'reauth_required', refresh_locked_until = NULL, updated_at = $2
-         WHERE id = $1`,
-        [id, now],
+        `UPDATE bexio_grants SET status = 'reauth_required',
+           refresh_locked_until = NULL, refresh_lock_token = NULL, updated_at = $2
+         WHERE id = $1 AND refresh_lock_token = $3`,
+        [id, now, lockToken],
       );
     },
 
-    async releaseRefreshLock(id) {
+    async releaseRefreshLock(id, lockToken) {
       await sql.query(
-        `UPDATE bexio_grants SET refresh_locked_until = NULL WHERE id = $1`,
-        [id],
+        `UPDATE bexio_grants SET refresh_locked_until = NULL, refresh_lock_token = NULL
+         WHERE id = $1 AND refresh_lock_token = $2`,
+        [id, lockToken],
       );
     },
 

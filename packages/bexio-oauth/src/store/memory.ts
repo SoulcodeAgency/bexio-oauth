@@ -13,6 +13,7 @@ import type {
  */
 export function memoryStore(): GrantStore {
   const rows = new Map<string, GrantRecord>();
+  const lockTokens = new Map<string, string>();
   const copy = (row: GrantRecord): GrantRecord => ({ ...row });
 
   return {
@@ -34,6 +35,7 @@ export function memoryStore(): GrantStore {
         updatedAt: now,
       };
       rows.set(row.id, row);
+      lockTokens.delete(row.id);
       return copy(row);
     },
 
@@ -67,12 +69,14 @@ export function memoryStore(): GrantStore {
           row.lastRefreshedAt < req.refreshedBefore);
       if (!needsRefresh) return null;
       row.refreshLockedUntil = req.lockUntil;
+      lockTokens.set(row.id, req.lockToken);
       return copy(row);
     },
 
-    async saveRefreshed(id, refresh: GrantRefresh) {
+    async saveRefreshed(id, lockToken, refresh: GrantRefresh) {
       const row = rows.get(id);
-      if (!row) return null;
+      if (!row || lockTokens.get(id) !== lockToken) return null;
+      lockTokens.delete(id);
       row.accessToken = refresh.accessToken;
       row.refreshToken = refresh.refreshToken ?? row.refreshToken;
       row.accessExpiresAt = refresh.accessExpiresAt;
@@ -86,21 +90,25 @@ export function memoryStore(): GrantStore {
       return copy(row);
     },
 
-    async markReauthRequired(id, now) {
+    async markReauthRequired(id, lockToken, now) {
       const row = rows.get(id);
-      if (!row) return;
+      if (!row || lockTokens.get(id) !== lockToken) return;
+      lockTokens.delete(id);
       row.status = "reauth_required";
       row.refreshLockedUntil = null;
       row.updatedAt = now;
     },
 
-    async releaseRefreshLock(id) {
+    async releaseRefreshLock(id, lockToken) {
       const row = rows.get(id);
-      if (row) row.refreshLockedUntil = null;
+      if (!row || lockTokens.get(id) !== lockToken) return;
+      lockTokens.delete(id);
+      row.refreshLockedUntil = null;
     },
 
     async deleteGrant(id) {
       rows.delete(id);
+      lockTokens.delete(id);
     },
 
     async listIdleGrants({ refreshedBefore, limit }) {

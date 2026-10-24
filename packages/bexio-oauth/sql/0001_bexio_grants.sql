@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS bexio_grants (
   refresh_expires_at    timestamptz,
   scope                 text,
   refresh_locked_until  timestamptz,
+  refresh_lock_token    text,
   last_refreshed_at     timestamptz NOT NULL DEFAULT now(),
   created_at            timestamptz NOT NULL DEFAULT now(),
   updated_at            timestamptz NOT NULL DEFAULT now(),

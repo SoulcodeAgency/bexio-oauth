@@ -26,6 +26,8 @@ export async function fetchRole(
         Authorization: `Bearer ${accessToken}`,
         Accept: "application/json",
       },
+      // Runs while the refresh lock is held: never wait long.
+      signal: AbortSignal.timeout(5_000),
     });
     if (!res.ok) return null;
     return roleFromPermissions(await res.json());

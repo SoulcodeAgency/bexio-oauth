@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import type { GrantStore, GrantUpsert } from "../src/index.js";
+import type { GrantRefresh, GrantStore, GrantUpsert } from "../src/index.js";
 
 const t0 = new Date("2026-03-01T10:00:00Z");
 const at = (ms: number) => new Date(t0.getTime() + ms);
@@ -24,6 +24,31 @@ function upsert(overrides: Partial<GrantUpsert> = {}): GrantUpsert {
   };
 }
 
+const refresh = (overrides: Partial<GrantRefresh> = {}): GrantRefresh => ({
+  accessToken: "enc-access-2",
+  refreshToken: null,
+  accessExpiresAt: at(700_000),
+  refreshExpiresAt: null,
+  scope: null,
+  role: null,
+  now: at(400_000),
+  ...overrides,
+});
+
+/** A lock request for a grant whose access token has expired at `at(400_000)`. */
+const expired = (
+  id: string,
+  lockToken: string,
+  nowMs = 400_000,
+  ttl = 30_000,
+) => ({
+  id,
+  now: at(nowMs),
+  lockUntil: at(nowMs + ttl),
+  lockToken,
+  accessExpiresBefore: at(nowMs),
+});
+
 /**
  * Behavior every `GrantStore` must have. Run against `memoryStore` and
  * `postgresStore` so both stay interchangeable.
@@ -43,7 +68,8 @@ export function storeContract(name: string, setup: () => Promise<GrantStore>) {
         lastRefreshedAt: t0,
         createdAt: t0,
       });
-      await store.markReauthRequired(a.id, at(1));
+      await store.acquireRefreshLock(expired(a.id, "L1"));
+      await store.markReauthRequired(a.id, "L1", at(1));
       const b = await store.upsertGrant(
         upsert({ accessToken: "enc-access-2", role: "admin", now: at(5_000) }),
       );
@@ -81,67 +107,42 @@ export function storeContract(name: string, setup: () => Promise<GrantStore>) {
           id: g.id,
           now: t0,
           lockUntil: at(30_000),
+          lockToken: "L0",
           accessExpiresBefore: at(5_000),
         }),
       ).toBeNull();
-      const req = {
-        id: g.id,
-        now: at(20_000),
-        lockUntil: at(50_000),
-        accessExpiresBefore: at(20_000),
-      };
-      expect(await store.acquireRefreshLock(req)).toMatchObject({
+      expect(
+        await store.acquireRefreshLock(expired(g.id, "L1", 20_000)),
+      ).toMatchObject({
         id: g.id,
         refreshLockedUntil: at(50_000),
       });
-      expect(await store.acquireRefreshLock(req)).toBeNull();
+      expect(
+        await store.acquireRefreshLock(expired(g.id, "L2", 20_000)),
+      ).toBeNull();
       // After the lock expires, the next caller takes over.
       expect(
-        await store.acquireRefreshLock({
-          ...req,
-          now: at(50_000),
-          lockUntil: at(80_000),
-        }),
-      ).toMatchObject({ refreshLockedUntil: at(80_000) });
+        await store.acquireRefreshLock(expired(g.id, "L3", 50_000)),
+      ).toMatchObject({
+        refreshLockedUntil: at(80_000),
+      });
     });
 
     it("refresh lock by idle time", async () => {
       const g = await store.upsertGrant(upsert());
+      const req = { id: g.id, now: at(1), lockUntil: at(2), lockToken: "L" };
       expect(
-        await store.acquireRefreshLock({
-          id: g.id,
-          now: at(1),
-          lockUntil: at(2),
-          refreshedBefore: t0,
-        }),
+        await store.acquireRefreshLock({ ...req, refreshedBefore: t0 }),
       ).toBeNull();
       expect(
-        await store.acquireRefreshLock({
-          id: g.id,
-          now: at(1),
-          lockUntil: at(2),
-          refreshedBefore: at(1),
-        }),
+        await store.acquireRefreshLock({ ...req, refreshedBefore: at(1) }),
       ).not.toBeNull();
     });
 
     it("saveRefreshed stores tokens, keeps nulls, releases the lock", async () => {
       const g = await store.upsertGrant(upsert());
-      await store.acquireRefreshLock({
-        id: g.id,
-        now: at(400_000),
-        lockUntil: at(430_000),
-        accessExpiresBefore: at(400_000),
-      });
-      const saved = await store.saveRefreshed(g.id, {
-        accessToken: "enc-access-2",
-        refreshToken: null,
-        accessExpiresAt: at(700_000),
-        refreshExpiresAt: null,
-        scope: null,
-        role: null,
-        now: at(400_000),
-      });
+      await store.acquireRefreshLock(expired(g.id, "L1"));
+      const saved = await store.saveRefreshed(g.id, "L1", refresh());
       expect(saved).toMatchObject({
         accessToken: "enc-access-2",
         refreshToken: "enc-refresh",
@@ -152,27 +153,53 @@ export function storeContract(name: string, setup: () => Promise<GrantStore>) {
       });
     });
 
-    it("markReauthRequired, releaseRefreshLock, delete", async () => {
+    it("fences holder writes: an expired or replaced lock changes nothing", async () => {
       const g = await store.upsertGrant(upsert());
-      await store.acquireRefreshLock({
-        id: g.id,
-        now: at(400_000),
-        lockUntil: at(430_000),
-        accessExpiresBefore: at(400_000),
+      await store.acquireRefreshLock(expired(g.id, "stale", 400_000, 1_000));
+      // The stale holder's lock expires and a second caller takes over.
+      await store.acquireRefreshLock(expired(g.id, "fresh", 402_000));
+      expect(
+        await store.saveRefreshed(g.id, "stale", refresh({ accessToken: "x" })),
+      ).toBeNull();
+      await store.markReauthRequired(g.id, "stale", at(402_500));
+      await store.releaseRefreshLock(g.id, "stale");
+      const row = await store.getGrant(g.id);
+      expect(row).toMatchObject({
+        accessToken: "enc-access",
+        status: "active",
+        refreshLockedUntil: at(432_000),
       });
-      await store.releaseRefreshLock(g.id);
+      // The current holder still can.
+      expect(await store.saveRefreshed(g.id, "fresh", refresh())).toMatchObject(
+        { accessToken: "enc-access-2" },
+      );
+    });
+
+    it("a reconnect clears the lock, so the in-flight refresh can't clobber it", async () => {
+      const g = await store.upsertGrant(upsert());
+      await store.acquireRefreshLock(expired(g.id, "L1"));
+      await store.upsertGrant(
+        upsert({ accessToken: "enc-reconnected", now: at(401_000) }),
+      );
+      expect(await store.saveRefreshed(g.id, "L1", refresh())).toBeNull();
+      await store.markReauthRequired(g.id, "L1", at(402_000));
+      expect(await store.getGrant(g.id)).toMatchObject({
+        accessToken: "enc-reconnected",
+        status: "active",
+        refreshLockedUntil: null,
+      });
+    });
+
+    it("markReauthRequired and releaseRefreshLock with the right token, then delete", async () => {
+      const g = await store.upsertGrant(upsert());
+      await store.acquireRefreshLock(expired(g.id, "L1"));
+      await store.releaseRefreshLock(g.id, "L1");
       expect((await store.getGrant(g.id))!.refreshLockedUntil).toBeNull();
-      await store.markReauthRequired(g.id, at(1));
+      await store.acquireRefreshLock(expired(g.id, "L2"));
+      await store.markReauthRequired(g.id, "L2", at(1));
       expect((await store.getGrant(g.id))!.status).toBe("reauth_required");
       // A reauth_required grant can't be locked for refresh.
-      expect(
-        await store.acquireRefreshLock({
-          id: g.id,
-          now: at(400_000),
-          lockUntil: at(430_000),
-          accessExpiresBefore: at(400_000),
-        }),
-      ).toBeNull();
+      expect(await store.acquireRefreshLock(expired(g.id, "L3"))).toBeNull();
       await store.deleteGrant(g.id);
       expect(await store.getGrant(g.id)).toBeNull();
     });
@@ -183,7 +210,8 @@ export function storeContract(name: string, setup: () => Promise<GrantStore>) {
       const dead = await store.upsertGrant(
         upsert({ ownerId: "c", now: at(0) }),
       );
-      await store.markReauthRequired(dead.id, at(3));
+      await store.acquireRefreshLock(expired(dead.id, "L"));
+      await store.markReauthRequired(dead.id, "L", at(3));
       await store.upsertGrant(upsert({ ownerId: "fresh", now: at(100) }));
       const idle = await store.listIdleGrants({
         refreshedBefore: at(50),

@@ -91,13 +91,14 @@ describe.skipIf(!hasDatabase)("postgres", () => {
           id,
           now,
           lockUntil: now,
+          lockToken: "t",
           accessExpiresBefore: now,
         }),
       ),
     ).toBe(1);
     expect(
       await count(() =>
-        store.saveRefreshed(id, {
+        store.saveRefreshed(id, "t", {
           accessToken: "a2",
           refreshToken: null,
           accessExpiresAt: now,
@@ -108,8 +109,8 @@ describe.skipIf(!hasDatabase)("postgres", () => {
         }),
       ),
     ).toBe(1);
-    expect(await count(() => store.releaseRefreshLock(id))).toBe(1);
-    expect(await count(() => store.markReauthRequired(id, now))).toBe(1);
+    expect(await count(() => store.releaseRefreshLock(id, "t"))).toBe(1);
+    expect(await count(() => store.markReauthRequired(id, "t", now))).toBe(1);
     expect(
       await count(() =>
         store.listIdleGrants({ refreshedBefore: now, limit: 5 }),
