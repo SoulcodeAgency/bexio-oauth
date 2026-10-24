@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { decodeProtectedHeader } from "jose";
 import { startMockBexio, type MockBexio } from "mock-bexio";
@@ -104,7 +105,10 @@ describe.each(backends)("$name store", ({ make }) => {
         o: "ws-1",
         r: "/settings",
       });
-      expect(typeof flow!.v).toBe("string");
+      // The verifier in the cookie is the one behind the URL's PKCE challenge.
+      expect(
+        createHash("sha256").update(String(flow!.v)).digest("base64url"),
+      ).toBe(url.searchParams.get("code_challenge"));
     });
 
     it("marks the cookie Secure for https redirect URIs", async () => {
@@ -126,6 +130,8 @@ describe.each(backends)("$name store", ({ make }) => {
         "/\t/evil.example",
         "/\n/evil.example",
         "/\r/evil.example",
+        "/.//evil.example",
+        "/x/..//evil.example",
       ]) {
         await expect(
           bexio.start(new Request("http://app.test/"), {
@@ -450,6 +456,21 @@ describe.each(backends)("$name store", ({ make }) => {
       }
     });
 
+    it("reports unreachable signing keys as idp_error, not as a bad token", async () => {
+      const fetchImpl: typeof fetch = (input, init) =>
+        String(input instanceof Request ? input.url : input).endsWith("/certs")
+          ? Promise.reject(new TypeError("network down"))
+          : fetch(input, init);
+      const bexio = client(mock, store, { fetch: fetchImpl });
+      const tokens = await mock.issueTokens({ sub: ADA });
+      await expect(
+        bexio.saveGrant({
+          ownerId: "u",
+          tokens: { accessToken: tokens.access_token },
+        }),
+      ).rejects.toMatchObject({ code: "idp_error" });
+    });
+
     it("rejects an access token issued to another client", async () => {
       const bexio = client(mock, store);
       const accessToken = await mock.signAccessToken({
@@ -579,6 +600,53 @@ describe.each(backends)("$name store", ({ make }) => {
         "admin",
       );
       mock.setAdmin(GRACE, "cmp-alpha", false);
+    });
+  });
+
+  describe("configuration", () => {
+    it("refuses a refresh lock TTL shorter than one refresh can take", () => {
+      expect(() => client(mock, store, { refreshLockTtl: "5s" })).toThrow(
+        /at least 20s/,
+      );
+    });
+  });
+
+  describe("lost refresh lock", () => {
+    it("a reconnect during a refresh wins, and the caller gets the reconnected token", async () => {
+      const clock = testClock();
+      let reconnected: string | undefined;
+      const base = client(mock, store, { clock: clock.now });
+      // Delay the refresh call and reconnect the same grant while it is in flight.
+      const fetchImpl: typeof fetch = async (input, init) => {
+        const isRefresh =
+          String(input instanceof Request ? input.url : input).endsWith(
+            "/token",
+          ) && String(init?.body ?? "").includes("grant_type=refresh_token");
+        if (isRefresh && !reconnected) {
+          await connect(base, mock, "ws-1", {
+            sub: ADA,
+            companyId: "cmp-alpha",
+          });
+          reconnected = (await store.findGrants({ ownerId: "ws-1" }))[0]!
+            .accessToken;
+        }
+        return fetch(input, init);
+      };
+      await connect(base, mock, "ws-1", { sub: ADA, companyId: "cmp-alpha" });
+      clock.advance(10 * 60_000);
+      const racing = client(mock, store, {
+        clock: clock.now,
+        fetch: fetchImpl,
+      });
+      const result = await racing.getAccessToken({ ownerId: "ws-1" });
+
+      const [row] = await store.findGrants({ ownerId: "ws-1" });
+      // The fenced save changed nothing: the reconnect's tokens are still there.
+      expect(row!.accessToken).toBe(reconnected);
+      expect(row!.status).toBe("active");
+      expect(result.accessToken).toBe(
+        (await base.getAccessToken({ ownerId: "ws-1" })).accessToken,
+      );
     });
   });
 

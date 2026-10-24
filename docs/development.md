@@ -64,11 +64,11 @@ All automated layers run on every pull request. There are no nightly or schedule
 
 Three workflows:
 
-| Workflow         | Trigger                  | Job                                                                   |
-| ---------------- | ------------------------ | --------------------------------------------------------------------- |
-| `ci.yml`         | every PR, push to `main` | `npm run check`, package-contents check, PR-title check, examples e2e |
-| `release.yml`    | push to `main`           | release-please; publish to npm when a release was created             |
-| `auto-merge.yml` | CI finished successfully | auto-merge eligible Dependabot and release PRs                        |
+| Workflow         | Trigger                  | Job                                                                                   |
+| ---------------- | ------------------------ | ------------------------------------------------------------------------------------- |
+| `ci.yml`         | every PR, push to `main` | `npm run check`, package-contents check, PR-title check (examples e2e: added with #2) |
+| `release.yml`    | push to `main`           | release-please; publish to npm when a release was created                             |
+| `auto-merge.yml` | CI finished successfully | auto-merge eligible Dependabot and release PRs                                        |
 
 Every write to the repo (opening the release PR, merging, tagging) runs as the org's **`soulcode-automation` GitHub App**, not as `GITHUB_TOKEN`. GitHub starts no workflows from events made with `GITHUB_TOKEN`: CI would never run on the release PR, and a merge would never trigger `release.yml`. The App's client id is the repo variable `SC_AUTOMATION_CLIENT_ID`; its private key is the secret `SC_AUTOMATION_PRIVATE_KEY`. Forks need their own App, or they can skip releasing altogether.
 
@@ -76,7 +76,7 @@ Every write to the repo (opening the release PR, merging, tagging) runs as the o
 
 ```mermaid
 flowchart TD
-    A["PR opened<br/>by a human or Dependabot"] --> B{"ci.yml<br/>check + e2e + PR title"}
+    A["PR opened<br/>by a human or Dependabot"] --> B{"ci.yml<br/>check + PR title"}
     B -->|red| A
     B -->|green| C{"Who merges?"}
     C -->|human PR| D["Human squash-merges"]
@@ -92,7 +92,7 @@ flowchart TD
     J --> L["push to main"]
     K --> L
     L --> M["release.yml: release-please<br/>creates tag vX.Y.Z + GitHub Release"]
-    M --> N["release.yml: publish job<br/>npm ci → npm run check → npm publish"]
+    M --> N["release.yml: verify (check + pack),<br/>then publish the tarball"]
     N --> O[("npm: @soulcode/bexio-oauth<br/>with provenance")]
 ```
 
@@ -102,13 +102,12 @@ flowchart TD
 flowchart LR
     PR["pull_request"] --> T["PR title<br/>Conventional Commits"]
     PR --> C["npm run check<br/>format · lint · typecheck · unit · integration"]
-    PR --> E["examples e2e<br/>better-auth · supabase<br/>against mock-bexio"]
-    T & C & E --> R{"All required<br/>checks green?"}
+    T & C --> R{"All required<br/>checks green?"}
     R -->|yes| M["mergeable"]
     R -->|no| X["blocked"]
 ```
 
-The `main` ruleset requires all three checks, allows squash merges only, and blocks direct pushes (except release-please's own release branch, via the App). Auto-merge can never skip a check: it only asks GitHub to merge _once the required checks pass_.
+The `main` ruleset requires `check` and `pr-title`, allows squash merges only, and blocks direct pushes (except release-please's own release branch, via the App). The auto-merge workflow only acts after CI completed successfully, and GitHub still refuses a merge while a required check is missing or red.
 
 ### 5.3 Release (`release.yml`)
 
@@ -155,18 +154,18 @@ flowchart TD
     S -->|no| Stop["do nothing"]
     S -->|yes| Who{"PR source"}
     Who -->|Dependabot| U{"update type<br/>from the PR title"}
-    U -->|"patch / minor / group"| AM["gh pr merge --auto --squash<br/>--match-head-commit, as App"]
+    U -->|"patch / minor / group"| AM["gh pr merge --squash<br/>--match-head-commit, as App"]
     U -->|"major, 0.x minor, unknown"| Cm1["comment: needs human review"]
     Who -->|"release PR by the App"| RC{"every package commit since last tag:<br/>author Dependabot AND fix(deps)?"}
     RC -->|yes| AM
-    RC -->|no| Cm2["disable auto-merge, comment:<br/>feature release, merge manually"]
+    RC -->|no| Cm2["comment: feature release,<br/>merge manually"]
     Who -->|anything else| Stop
 ```
 
 - **Why `workflow_run` and not `pull_request`:** a run triggered by Dependabot on `pull_request` gets a read-only token and no regular secrets. `workflow_run` runs in the default-branch context, so the App key and the normal permissions are available.
 - **Update type from the PR title.** `dependabot/fetch-metadata` needs the `pull_request` payload, which a `workflow_run` doesn't have, so the workflow parses "bump x from 1.2.3 to 1.3.0". It fails closed: a major bump, a minor bump below 1.0, or a title it doesn't recognise needs a human. Grouped PRs are only trusted for the groups defined in `dependabot.yml`, which contain minor and patch updates only.
-- **`--match-head-commit`** asks GitHub to merge only the commit CI just checked.
-- **Release PRs are only considered when opened by the automation App**, never for another branch that happens to be named `release-please--…`. Only commits that touch `packages/bexio-oauth` count, the same ones release-please puts into the release (`scripts/release-classify.mjs`, unit-tested). When a release stops qualifying (a feature landed), the workflow disables auto-merge on the PR again.
+- **Direct merge, not GitHub's auto-merge.** CI holds every required check, so a successful CI run means the PR is mergeable; `--match-head-commit` merges only the commit CI just checked, and nothing is left armed on the PR if a later push changes it.
+- **Release PRs are only considered when opened by the automation App**, never for another branch that happens to be named `release-please--…`. Only commits that touch `packages/bexio-oauth` count, the same ones release-please puts into the release (`scripts/release-classify.mjs`, unit-tested). The release PR's head commit must also be the App's, so nobody can push a change onto the release branch and have it merged automatically.
 - **The human gate:** release PRs containing a `feat`, a human-written `fix` or a breaking change are never auto-merged. Merging those is the release decision. Releases made up only of dependency fixes (typically security updates) ship without waiting for anyone.
 
 ### 5.5 Dependabot
@@ -215,7 +214,7 @@ Every release after that is automated.
 
 - [ ] Repository is public (provenance requires it).
 - [ ] `soulcode-automation` App installed on the repo (contents + pull-requests write); variable `SC_AUTOMATION_CLIENT_ID`, secret `SC_AUTOMATION_PRIVATE_KEY`.
-- [ ] "Allow auto-merge" enabled; "Dependabot security updates" enabled.
+- [ ] "Dependabot security updates" enabled.
 - [ ] Environment `npm`, deployment branches restricted to `main`.
 - [ ] `main` ruleset: PRs only, squash only, required checks `check` and `pr-title` (plus `e2e` once the example apps land), the App allowed to bypass for the release branch.
 - [ ] npm: trusted publisher configured, tokens disallowed (after the bootstrap publish).

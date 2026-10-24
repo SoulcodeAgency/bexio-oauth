@@ -184,7 +184,7 @@ describe.skipIf(!hasDatabase)("postgres", () => {
     const clock = testClock();
     const bexio = client(mock, postgresStore(db.pool), {
       clock: clock.now,
-      refreshLockTtl: "2s",
+      refreshLockTtl: "25s",
     });
     const { grant } = await connect(bexio, mock, "ws-1", { sub: GRACE });
     clock.advance(10 * 60_000);

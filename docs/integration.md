@@ -153,7 +153,7 @@ export const bexio = createBexioOAuth({
 | `keys`                     | yes      | Encryption keyring, see below.                                                                                                                              |
 | `store`                    | yes      | `postgresStore(sqlClient)` or `memoryStore()` (tests only).                                                                                                 |
 | `issuer`, `apiBaseUrl`     | no       | Default to Bexio's production URLs. Override only to point at a mock in tests. Plain `http` is accepted only for loopback hosts (`localhost`, `127.0.0.1`). |
-| `refreshLockTtl`           | no       | Default `"30s"`. See [§10](#refresh-coordination).                                                                                                          |
+| `refreshLockTtl`           | no       | Default `"30s"`, minimum `"20s"`. See [§10](#refresh-coordination).                                                                                         |
 | `defaultReturnTo`          | no       | Where `callback` redirects when it can't read `returnTo` from the flow cookie. Default `"/"`.                                                               |
 | `fetch`                    | no       | Custom `fetch` used for every request to Bexio (proxies, tests).                                                                                            |
 | `clock`                    | no       | `() => Date`, for tests that move time forward.                                                                                                             |
@@ -346,7 +346,7 @@ Bexio rotates refresh tokens and rejects a refresh token that has already been u
 4. If the winner crashes, the lock expires after `refreshLockTtl` and the next caller takes over.
 5. Every write by the lock holder carries a random lock token and only applies while that token still holds the lock. A holder whose lock expired, or whose grant was reconnected meanwhile, changes nothing; it re-reads the row and uses the newer tokens if they are valid.
 
-Every HTTP request to Bexio has a 10-second timeout (the permissions call 5 seconds), well inside the default 30-second lock. If you lower `refreshLockTtl`, keep it above 20 seconds.
+Every HTTP request to Bexio has a 10-second timeout (the permissions call 5 seconds), well inside the default 30-second lock. Discovery runs before the lock is taken. `refreshLockTtl` below 20 seconds is refused (`invalid_config`).
 
 This works across processes, containers and serverless instances. All it relies on is the database.
 
