@@ -11,3 +11,4 @@ playwright-report/
 test-results/
 supabase/.temp/
 .DS_Store
+next-env.d.ts
