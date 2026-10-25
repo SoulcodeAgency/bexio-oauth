@@ -107,7 +107,7 @@ flowchart LR
     R -->|no| X["blocked"]
 ```
 
-The `main` ruleset requires `check` and `pr-title`, allows squash merges only, and blocks direct pushes. Nobody bypasses it, the App included: release-please only pushes to its own `release-please--*` branch. The auto-merge workflow only acts after CI completed successfully, and GitHub still refuses a merge while a required check is missing or red.
+The `main` ruleset requires `check`, `e2e` (from the example apps, #2) and `pr-title`, allows squash merges only, and blocks direct pushes. Nobody bypasses it, the App included: release-please only pushes to its own `release-please--*` branch. The auto-merge workflow only acts after CI completed successfully, and GitHub still refuses a merge while a required check is missing or red.
 
 ### 5.3 Release (`release.yml`)
 
@@ -216,5 +216,5 @@ Every release after that is automated.
 - [ ] `soulcode-automation` App installed on the repo (contents + pull-requests write); variable `SC_AUTOMATION_CLIENT_ID`, secret `SC_AUTOMATION_PRIVATE_KEY`.
 - [ ] "Dependabot security updates" enabled.
 - [ ] Environment `npm`, deployment branches restricted to `main`.
-- [ ] `main` ruleset: PRs only, squash only, required checks `check` and `pr-title` (plus `e2e` once the example apps land), no bypass actors.
+- [ ] `main` ruleset: PRs only, squash only, required checks `check`, `e2e` (from the example apps, #2) and `pr-title`, no bypass actors.
 - [ ] npm: trusted publisher configured, tokens disallowed (after the bootstrap publish).
