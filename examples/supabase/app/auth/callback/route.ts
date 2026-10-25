@@ -3,8 +3,9 @@ import { getBexio } from "@/lib/bexio";
 import { createClient } from "@/lib/supabase/server";
 
 // "Sign in with Bexio" through Supabase Auth's custom OIDC provider
-// (BEXIO_SUPABASE_PROVIDER, e.g. "custom:bexio"). Supabase hands the provider
-// tokens to the app exactly once, here; the library takes them over.
+// (BEXIO_SUPABASE_PROVIDER, e.g. "custom:bexio"). exchangeCodeForSession
+// returns the provider tokens once; the library takes them over, and the
+// Supabase session is re-saved without them.
 // Not yet verified against live Bexio: Supabase Auth requires a public HTTPS
 // issuer, so this can't run against the local mock (see examples/README.md).
 export async function GET(request: Request) {
@@ -24,6 +25,7 @@ export async function GET(request: Request) {
     provider_refresh_token,
     user,
   } = data.session;
+  let resaveFailed = false;
   try {
     if (provider_token) {
       await getBexio().saveGrant({
@@ -38,7 +40,21 @@ export async function GET(request: Request) {
     // exchangeCodeForSession stored the whole session, provider tokens
     // included, in the (JavaScript-readable) auth cookie. Re-save it without
     // them, so the grant is the only place the Bexio tokens live.
-    await supabase.auth.setSession({ access_token, refresh_token });
+    const resaved = await supabase.auth.setSession({
+      access_token,
+      refresh_token,
+    });
+    if (resaved.error) {
+      // setSession reports instead of throwing. Never keep a cookie that
+      // still holds the Bexio tokens: drop the local session.
+      await supabase.auth.signOut({ scope: "local" });
+      resaveFailed = true;
+    }
+  }
+  if (resaveFailed) {
+    return NextResponse.redirect(
+      new URL("/?auth_error=session_resave_failed", url),
+    );
   }
   return NextResponse.redirect(new URL("/", url));
 }
