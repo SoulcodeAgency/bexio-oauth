@@ -8,13 +8,13 @@ export const BEXIO_API_BASE_URL = "https://api.bexio.com";
  * Always requested. `company_profile` adds the company claims; `offline_access`
  * issues a refresh token that keeps working without the user present.
  */
-export const BASE_SCOPES = [
+export const BASE_SCOPES: readonly string[] = Object.freeze([
   "openid",
   "profile",
   "email",
   "company_profile",
   "offline_access",
-];
+]);
 
 export type ClaimBag = Record<string, unknown>;
 

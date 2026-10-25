@@ -39,7 +39,7 @@ export const bexio = createBexioOAuth({
 ```ts
 // GET /api/bexio/connect
 export const GET = async (req: Request) =>
-  bexio.start(req, {
+  bexio.start({
     ownerId: await currentWorkspaceId(req),
     returnTo: "/settings",
   });

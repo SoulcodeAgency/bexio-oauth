@@ -150,7 +150,7 @@ describe.skipIf(!hasDatabase)("postgres", () => {
     const poolB = db.newPool();
     // Open connections up front, so the five calls really run in parallel.
     await Promise.all(
-      [...Array(5)].flatMap(() => [
+      Array.from({ length: 5 }).flatMap(() => [
         db.pool.query("SELECT 1"),
         poolB.query("SELECT 1"),
       ]),
@@ -211,6 +211,7 @@ describe.skipIf(!hasDatabase)("postgres", () => {
       skipped: 0,
       reauthRequired: 0,
       failed: 0,
+      remaining: 0,
     });
   });
 });

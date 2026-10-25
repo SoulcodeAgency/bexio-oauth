@@ -11,5 +11,5 @@ export async function GET(request: Request) {
   if (!canManageOwner(session.user, ownerId)) {
     return new Response("Not allowed", { status: 403 });
   }
-  return getBexio().start(request, { ownerId, returnTo: "/" });
+  return getBexio().start({ ownerId, returnTo: "/" });
 }

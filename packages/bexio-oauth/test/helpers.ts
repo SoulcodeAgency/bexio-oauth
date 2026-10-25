@@ -9,7 +9,7 @@ import {
   type GrantStore,
 } from "../src/index.js";
 
-export const REDIRECT_URI = "http://app.test/api/bexio/callback";
+export const REDIRECT_URI = "http://localhost/api/bexio/callback";
 export const ADA = "8f1c2a8e-0001-4000-8000-000000000001";
 export const GRACE = "8f1c2a8e-0002-4000-8000-000000000002";
 
@@ -72,7 +72,7 @@ export async function authorize(
   login: NextLogin = {},
   returnTo = "/settings",
 ): Promise<{ request: Request; start: Response }> {
-  const start = await bexio.start(new Request("http://app.test/connect"), {
+  const start = await bexio.start({
     ownerId,
     returnTo,
   });

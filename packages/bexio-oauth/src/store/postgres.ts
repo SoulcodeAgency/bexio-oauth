@@ -1,3 +1,4 @@
+import { BexioOAuthError } from "../errors.js";
 import type { GrantRecord, GrantStore } from "./types.js";
 
 /**
@@ -5,9 +6,12 @@ import type { GrantRecord, GrantStore } from "./types.js";
  * `Client` matches it as is; other drivers need a few lines of wrapper.
  */
 export interface SqlClient {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  query(text: string, params?: unknown[]): Promise<{ rows: any[] }>;
+  query(text: string, params?: unknown[]): Promise<{ rows: unknown[] }>;
 }
+
+// `id` is a uuid column: any other value matches no row, and would make
+// Postgres reject the cast instead of returning nothing.
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const COLUMNS = `id, owner_id, bexio_company_id, bexio_user_id, bexio_company_user_id,
   company_name, user_name, user_email, role, status, access_token, refresh_token,
@@ -128,11 +132,17 @@ export function postgresStore(sql: SqlClient): GrantStore {
           g.now,
         ],
       );
-      if (!row) throw new Error("upsert returned no row");
+      if (!row) {
+        throw new BexioOAuthError(
+          "invalid_config",
+          "SqlClient returned no row for INSERT … RETURNING; check the driver wrapper",
+        );
+      }
       return row;
     },
 
     async findGrants({ ownerId, companyId, grantId }) {
+      if (grantId !== undefined && !UUID.test(grantId)) return [];
       return many(
         `SELECT ${COLUMNS} FROM bexio_grants
          WHERE owner_id = $1
@@ -144,6 +154,7 @@ export function postgresStore(sql: SqlClient): GrantStore {
     },
 
     async getGrant(id) {
+      if (!UUID.test(id)) return null;
       return one(`SELECT ${COLUMNS} FROM bexio_grants WHERE id = $1`, [id]);
     },
 
