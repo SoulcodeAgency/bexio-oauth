@@ -75,7 +75,7 @@ jobs:
       # What ships is what was tested: the full check on the tagged commit.
       - run: npm run check
       - run: node scripts/check-pack.mjs
-      - run: npm pack -w @soulcode/bexio-oauth --pack-destination dist-pack
+      - run: mkdir -p dist-pack && npm pack -w @soulcode/bexio-oauth --pack-destination dist-pack
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: package
