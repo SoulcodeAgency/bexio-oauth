@@ -22,6 +22,15 @@ import {
   mockBexio,
   testClock,
 } from "./helpers.js";
+import { OFF_SITE_RETURN_TO } from "./return-to-attacks.js";
+
+/** The form body of an outgoing request, for matching the grant type. */
+function bodyText(init: RequestInit | undefined): string {
+  const body = init?.body;
+  if (typeof body === "string") return body;
+  if (body instanceof URLSearchParams) return body.toString();
+  return "";
+}
 
 let mock: MockBexio;
 let store: GrantStore;
@@ -57,7 +66,7 @@ describe.each(backends)("$name store", ({ make }) => {
   describe("start", () => {
     it("redirects to Bexio with PKCE S256, state, nonce and merged scopes, and sets the flow cookie", async () => {
       const bexio = client(mock, store);
-      const res = await bexio.start(new Request("http://localhost/connect"), {
+      const res = await bexio.start({
         ownerId: "ws-1",
         returnTo: "/settings",
       });
@@ -115,7 +124,7 @@ describe.each(backends)("$name store", ({ make }) => {
       const bexio = client(mock, store, {
         redirectUri: "https://app.example.com/cb",
       });
-      const res = await bexio.start(new Request("https://app.example.com/"), {
+      const res = await bexio.start({
         ownerId: "ws-1",
       });
       expect(res.headers.getSetCookie()[0]).toContain("Secure");
@@ -123,18 +132,9 @@ describe.each(backends)("$name store", ({ make }) => {
 
     it("rejects returnTo values that could redirect off-site", async () => {
       const bexio = client(mock, store);
-      for (const returnTo of [
-        "https://evil.example",
-        "//evil.example",
-        "/\\evil.example",
-        "/\t/evil.example",
-        "/\n/evil.example",
-        "/\r/evil.example",
-        "/.//evil.example",
-        "/x/..//evil.example",
-      ]) {
+      for (const returnTo of OFF_SITE_RETURN_TO) {
         await expect(
-          bexio.start(new Request("http://localhost/"), {
+          bexio.start({
             ownerId: "ws",
             returnTo,
           }),
@@ -649,7 +649,7 @@ describe.each(backends)("$name store", ({ make }) => {
         const isRefresh =
           String(input instanceof Request ? input.url : input).endsWith(
             "/token",
-          ) && String(init?.body ?? "").includes("grant_type=refresh_token");
+          ) && bodyText(init).includes("grant_type=refresh_token");
         if (isRefresh && !reconnected) {
           await connect(base, mock, "ws-1", {
             sub: ADA,
@@ -675,6 +675,29 @@ describe.each(backends)("$name store", ({ make }) => {
       expect(result.accessToken).toBe(
         (await base.getAccessToken({ ownerId: "ws-1" })).accessToken,
       );
+    });
+
+    it("gives up with idp_error when it keeps losing the lock past the deadline", async () => {
+      const clock = testClock();
+      await connect(client(mock, store, { clock: clock.now }), mock, "ws-1");
+      clock.advance(10 * 60_000);
+      // Every fenced save "loses" the lock, and by the time the caller
+      // re-reads the grant its new token has expired again.
+      const losing: GrantStore = {
+        ...store,
+        async saveRefreshed(id, lockToken, refresh) {
+          await store.saveRefreshed(id, lockToken, refresh);
+          clock.advance(10 * 60_000);
+          return null;
+        },
+      };
+      const bexio = client(mock, losing, { clock: clock.now });
+      await expect(
+        bexio.getAccessToken({ ownerId: "ws-1" }),
+      ).rejects.toMatchObject({
+        code: "idp_error",
+        message: "timed out waiting for a concurrent token refresh",
+      });
     });
   });
 
@@ -755,6 +778,7 @@ describe.each(backends)("$name store", ({ make }) => {
         skipped: 0,
         reauthRequired: 0,
         failed: 1,
+        remaining: 0,
       });
     });
 
@@ -775,6 +799,7 @@ describe.each(backends)("$name store", ({ make }) => {
         skipped: 1,
         reauthRequired: 0,
         failed: 0,
+        remaining: 0,
       });
     });
 
@@ -793,6 +818,7 @@ describe.each(backends)("$name store", ({ make }) => {
         skipped: 0,
         reauthRequired: 1,
         failed: 0,
+        remaining: 0,
       });
       expect(
         (await bexio.listGrants({ ownerId: "idle" }))[0]!.lastRefreshedAt,
@@ -805,7 +831,49 @@ describe.each(backends)("$name store", ({ make }) => {
         skipped: 0,
         reauthRequired: 0,
         failed: 0,
+        remaining: 0,
       });
+    });
+
+    it("stops before the next grant once timeBudget is spent, and reports the rest as remaining", async () => {
+      const clock = testClock();
+      // Every refresh "takes" 10 s on the test clock.
+      const fetchImpl: typeof fetch = (input, init) => {
+        const isRefresh =
+          String(input instanceof Request ? input.url : input).endsWith(
+            "/token",
+          ) && bodyText(init).includes("grant_type=refresh_token");
+        if (isRefresh) clock.advance(10_000);
+        return fetch(input, init);
+      };
+      const bexio = client(mock, store, { clock: clock.now, fetch: fetchImpl });
+      for (const owner of ["idle-1", "idle-2", "idle-3"])
+        await connect(bexio, mock, owner);
+      clock.advance(8 * 86_400_000);
+
+      // 0 s and 10 s elapsed: refresh; 20 s elapsed: over the 15 s budget.
+      expect(
+        await bexio.refreshIdle({ idleFor: "7d", timeBudget: "15s" }),
+      ).toEqual({
+        refreshed: 2,
+        skipped: 0,
+        reauthRequired: 0,
+        failed: 0,
+        remaining: 1,
+      });
+      // The next run picks up the grant this one left.
+      expect(
+        await bexio.refreshIdle({ idleFor: "7d", timeBudget: "15s" }),
+      ).toEqual({
+        refreshed: 1,
+        skipped: 0,
+        reauthRequired: 0,
+        failed: 0,
+        remaining: 0,
+      });
+      await expect(
+        bexio.refreshIdle({ idleFor: "7d", timeBudget: "soon" as never }),
+      ).rejects.toMatchObject({ code: "invalid_config" });
     });
   });
 

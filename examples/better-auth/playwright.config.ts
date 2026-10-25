@@ -1,7 +1,8 @@
 import { defineConfig } from "@playwright/test";
 
-const MOCK_PORT = 9401;
-const APP_PORT = 3400;
+// Override when a dev server already uses the default ports.
+const MOCK_PORT = Number(process.env.E2E_MOCK_PORT ?? 9401);
+const APP_PORT = Number(process.env.E2E_APP_PORT ?? 3400);
 const mock = `http://127.0.0.1:${MOCK_PORT}`;
 
 // Everything the app needs, pointed at mock-bexio. Test-only values.
@@ -40,7 +41,7 @@ export default defineConfig({
       reuseExistingServer: !process.env.CI,
     },
     {
-      command: "npm run migrate && npm run build && npm run start",
+      command: `npm run migrate && npm run build && npx next start -p ${APP_PORT}`,
       url: `${env.APP_URL}/`,
       env,
       timeout: 240_000,

@@ -93,6 +93,8 @@ What it is for:
 
 The SQL files are also in the package at `node_modules/@soulcode/bexio-oauth/sql/` if you'd rather copy them by hand. The CLI is a convenience, not a requirement.
 
+`migrations()` returns the same SQL embedded in the library's JavaScript, not read from disk, so it works unchanged when your bundler inlines the library (for example in Next.js route handlers or server actions, without adding it to `serverExternalPackages`).
+
 ### Supabase
 
 Connect through the pooler connection string (Project settings → Database), not supabase-js: the library needs real SQL for its atomic refresh lock. Then **enable row-level security on `bexio_grants` and add no policies**. The `anon` and `authenticated` roles then can't read it, and only your server-side connection can.
@@ -195,7 +197,7 @@ import { requireWorkspace } from "@/lib/auth"; // your app's auth
 
 export async function GET(request: Request) {
   const workspace = await requireWorkspace(request);
-  return bexio.start(request, {
+  return bexio.start({
     ownerId: workspace.id,
     returnTo: "/settings/bexio",
   });
@@ -215,7 +217,7 @@ export async function GET(request: Request) {
 
 What happens:
 
-1. `start` creates a random `state`, a PKCE verifier and a `nonce`, stores them with `ownerId` and `returnTo` in an **encrypted, HttpOnly cookie** named `bexio_oauth_flow` (10 minutes, scoped to the callback path), and redirects to Bexio. `returnTo` must be a relative path (`/settings`); anything else throws `invalid_config`, so it can't be abused as an open redirect.
+1. `start({ ownerId, returnTo? })` needs nothing from the request; it returns the redirect `Response`. It creates a random `state`, a PKCE verifier and a `nonce`, stores them with `ownerId` and `returnTo` in an **encrypted, HttpOnly cookie** named `bexio_oauth_flow` (10 minutes, scoped to the callback path), and redirects to Bexio. `returnTo` must be a relative path (`/settings`); anything else throws `invalid_config`, so it can't be abused as an open redirect.
 2. The user logs in at Bexio, picks a company and consents.
 3. `callback` reads the cookie, checks `state`, **checks that the `ownerId` you pass now equals the one from `start`**, exchanges the code (PKCE), verifies the ID token (signature, issuer, audience, nonce), reads the user's role, saves the grant, deletes the cookie, and redirects to `returnTo`.
 4. On failure it redirects to `returnTo?bexio_error=<code>` (see [§11](#11-errors)) and saves nothing.
@@ -315,12 +317,19 @@ for (const workspace of await listWorkspacesWithBexio()) {
 ```ts
 // app/api/cron/bexio-refresh/route.ts, run e.g. weekly
 export async function GET() {
-  const result = await bexio.refreshIdle({ idleFor: "7d" });
-  return Response.json(result); // { refreshed: 12, skipped: 0, reauthRequired: 1, failed: 0 }
+  const result = await bexio.refreshIdle({ idleFor: "7d", timeBudget: "45s" });
+  return Response.json(result); // { refreshed: 12, skipped: 0, reauthRequired: 1, failed: 0, remaining: 0 }
 }
 ```
 
-`skipped` counts idle grants another process was refreshing at the same moment; `failed` counts refreshes that failed for another reason, e.g. Bexio unreachable or a token that can't be decrypted (they are retried on the next run). `limit` (default 500) caps how many grants one run handles. If Bexio is unreachable, the run returns every idle grant as `failed` instead of throwing.
+`skipped` counts idle grants another process was refreshing at the same moment; `failed` counts refreshes that failed for another reason, e.g. Bexio unreachable or a token that can't be decrypted (they are retried on the next run). If Bexio is unreachable, the run returns every idle grant as `failed` instead of throwing.
+
+Grants are refreshed one after another, oldest first, so two knobs keep a run inside a serverless function timeout:
+
+- `limit` (default 100) caps how many idle grants one run looks at.
+- `timeBudget` (a `Duration`, optional) stops the run before it locks the next grant once that much time has passed since the call started. Set it comfortably below your function timeout: the refresh already in flight still finishes, and it can take up to `refreshLockTtl`. `remaining` counts the idle grants this run did not attempt (0 when it attempted all of them); the next run picks them up first. Without `timeBudget` the run attempts every grant it listed.
+
+If `remaining` is often above 0, or a run hits `limit` every time, schedule it more often.
 
 Protect that route the way your platform protects cron routes (a secret header, for example).
 
@@ -402,6 +411,7 @@ Need to reference a grant from your own tables? Store the `owner_id` you chose (
 ## 14. Testing your app
 
 - Use `memoryStore()` in unit tests: same behavior, no database.
+- To stub the client itself, implement the `BexioOAuth` interface (or the methods your code calls) with your test double.
 - For end-to-end tests, point `issuer` and `apiBaseUrl` at a mock OIDC server that issues Bexio-shaped tokens. The repo's `examples/_shared/mock-bexio` is a reference you can copy (it isn't published).
 
 ## 15. Design notes
@@ -419,20 +429,22 @@ Why the library looks the way it does. If any of these change, the reasoning is 
 
 Everything the package exports. `test/docs.test.ts` fails if an export is missing here.
 
-| Export                                                                                                              | Kind      | Purpose                                                                                                                                       |
-| ------------------------------------------------------------------------------------------------------------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `createBexioOAuth`                                                                                                  | function  | Creates the client: `start`, `callback`, `handleCallback`, `saveGrant`, `getAccessToken`, `listGrants`, `disconnect`, `refreshIdle` (§6–§10). |
-| `postgresStore`                                                                                                     | function  | Grant store on `bexio_grants` over a `SqlClient` (§4).                                                                                        |
-| `memoryStore`                                                                                                       | function  | In-memory grant store for tests (§14).                                                                                                        |
-| `generateKey`                                                                                                       | function  | A new random key for the keyring, as `keygen` prints it (§5).                                                                                 |
-| `migrations`                                                                                                        | function  | The shipped SQL migrations, as `sql` prints them (§4).                                                                                        |
-| `mapClaims`                                                                                                         | function  | Maps Bexio's claims to a `BexioIdentity` (used internally; handy in tests).                                                                   |
-| `roleFromPermissions`                                                                                               | function  | Maps a `/3.0/permissions` response to `admin` or `member` (§2).                                                                               |
-| `isBexioOAuthError`                                                                                                 | function  | Type guard, optionally for one `code` (§11).                                                                                                  |
-| `BexioOAuthError`                                                                                                   | class     | The only error type the library throws on purpose (§11).                                                                                      |
-| `BASE_SCOPES`                                                                                                       | constant  | Scopes always requested (§5).                                                                                                                 |
-| `BEXIO_ISSUER`, `BEXIO_API_BASE_URL`                                                                                | constants | Bexio's production issuer and API base URL.                                                                                                   |
-| `BexioOAuth`, `BexioOAuthConfig`                                                                                    | types     | The client and its configuration.                                                                                                             |
-| `Grant`, `GrantSelector`, `AccessToken`, `CallbackOptions`, `CallbackResult`, `ExternalTokens`, `RefreshIdleResult` | types     | Inputs and results of the client methods.                                                                                                     |
-| `BexioIdentity`, `Role`, `Keyring`, `Duration`, `Migration`, `BexioOAuthErrorCode`                                  | types     | Supporting types.                                                                                                                             |
-| `SqlClient`, `GrantStore`, `GrantRecord`, `GrantUpsert`, `GrantRefresh`, `GrantStatus`, `LockRequest`               | types     | For writing your own store. Every method must be atomic on its own.                                                                           |
+| Export                                                                                                | Kind      | Purpose                                                                                                                                                                                                                                                             |
+| ----------------------------------------------------------------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `createBexioOAuth`                                                                                    | function  | Creates the client (a `BexioOAuth`): `start`, `callback`, `handleCallback`, `saveGrant`, `getAccessToken`, `listGrants`, `disconnect`, `refreshIdle` (§6–§10). `start` takes `{ ownerId, returnTo? }` only; `refreshIdle` takes `{ idleFor, limit?, timeBudget? }`. |
+| `postgresStore`                                                                                       | function  | Grant store on `bexio_grants` over a `SqlClient` (§4).                                                                                                                                                                                                              |
+| `memoryStore`                                                                                         | function  | In-memory grant store for tests (§14).                                                                                                                                                                                                                              |
+| `generateKey`                                                                                         | function  | A new random key for the keyring, as `keygen` prints it (§5).                                                                                                                                                                                                       |
+| `migrations`                                                                                          | function  | The shipped SQL migrations, as `sql` prints them (§4).                                                                                                                                                                                                              |
+| `mapClaims`                                                                                           | function  | Maps Bexio's claims to a `BexioIdentity` (used internally; handy in tests).                                                                                                                                                                                         |
+| `roleFromPermissions`                                                                                 | function  | Maps a `/3.0/permissions` response to `admin` or `member` (§2).                                                                                                                                                                                                     |
+| `isBexioOAuthError`                                                                                   | function  | Type guard, optionally for one `code` (§11).                                                                                                                                                                                                                        |
+| `BexioOAuthError`                                                                                     | class     | The only error type the library throws on purpose (§11).                                                                                                                                                                                                            |
+| `BASE_SCOPES`                                                                                         | constant  | Scopes always requested (§5).                                                                                                                                                                                                                                       |
+| `BEXIO_ISSUER`, `BEXIO_API_BASE_URL`                                                                  | constants | Bexio's production issuer and API base URL.                                                                                                                                                                                                                         |
+| `BexioOAuth`                                                                                          | interface | The client returned by `createBexioOAuth`, with every method documented; implement it to stub the client in tests (§14).                                                                                                                                            |
+| `BexioOAuthConfig`                                                                                    | type      | The client's configuration (§5).                                                                                                                                                                                                                                    |
+| `Grant`, `GrantSelector`, `AccessToken`, `CallbackOptions`, `CallbackResult`, `ExternalTokens`        | types     | Inputs and results of the client methods.                                                                                                                                                                                                                           |
+| `RefreshIdleResult`                                                                                   | type      | `{ refreshed, skipped, reauthRequired, failed, remaining }` from `refreshIdle` (§9).                                                                                                                                                                                |
+| `BexioIdentity`, `Role`, `Keyring`, `Duration`, `Migration`, `BexioOAuthErrorCode`                    | types     | Supporting types.                                                                                                                                                                                                                                                   |
+| `SqlClient`, `GrantStore`, `GrantRecord`, `GrantUpsert`, `GrantRefresh`, `GrantStatus`, `LockRequest` | types     | For writing your own store. Every method must be atomic on its own.                                                                                                                                                                                                 |

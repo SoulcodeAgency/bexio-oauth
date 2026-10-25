@@ -1,15 +1,15 @@
-export {
-  createBexioOAuth,
-  type AccessToken,
-  type BexioOAuth,
-  type BexioOAuthConfig,
-  type CallbackOptions,
-  type CallbackResult,
-  type ExternalTokens,
-  type Grant,
-  type GrantSelector,
-  type RefreshIdleResult,
-} from "./client.js";
+export { createBexioOAuth } from "./client.js";
+export type {
+  AccessToken,
+  BexioOAuth,
+  BexioOAuthConfig,
+  CallbackOptions,
+  CallbackResult,
+  ExternalTokens,
+  Grant,
+  GrantSelector,
+  RefreshIdleResult,
+} from "./types.js";
 export {
   BASE_SCOPES,
   BEXIO_API_BASE_URL,

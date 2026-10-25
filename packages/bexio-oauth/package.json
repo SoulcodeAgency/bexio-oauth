@@ -38,6 +38,8 @@
     "node": ">=24"
   },
   "scripts": {
+    "sql:generate": "node ../../scripts/generate-migrations.mjs",
+    "prebuild": "node ../../scripts/generate-migrations.mjs --check",
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",

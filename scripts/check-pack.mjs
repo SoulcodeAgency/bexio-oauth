@@ -21,6 +21,7 @@ for (const required of [
   "dist/index.js",
   "dist/index.d.ts",
   "dist/bin.js",
+  "dist/migrations.generated.js",
   "sql/0001_bexio_grants.sql",
 ]) {
   if (!files.some((f) => f.path === required)) {

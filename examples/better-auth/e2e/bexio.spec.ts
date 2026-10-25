@@ -7,6 +7,7 @@ const GRACE = "8f1c2a8e-0002-4000-8000-000000000002";
 const cron = { Authorization: `Bearer ${e2eEnv.CRON_SECRET}` };
 
 const db = new pg.Pool({ connectionString: e2eEnv.DATABASE_URL });
+type Row = { id: string; access_token: string };
 
 /** Who "logs in" at the mock on the next authorization request. */
 async function nextLogin(login: {
@@ -69,9 +70,10 @@ test("sign in with Bexio: the grant is saved, Better Auth keeps no tokens, disco
   expect(accounts).toEqual([
     { accessToken: null, refreshToken: null, idToken: null },
   ]);
-  const { rows: grants } = await db.query(
-    "SELECT access_token, refresh_token FROM bexio_grants",
-  );
+  const { rows: grants } = await db.query<{
+    access_token: string;
+    refresh_token: string;
+  }>("SELECT access_token, refresh_token FROM bexio_grants");
   expect(grants).toHaveLength(1);
   // JWE compact serialization: five dot-separated parts, not a readable JWT.
   expect(grants[0].access_token.split(".")).toHaveLength(5);
@@ -104,10 +106,10 @@ test("connect Bexio for a workspace, use it from a background job, keep it alive
 
   const lastRefreshed = async () =>
     (
-      await db.query(
+      await db.query<{ last_refreshed_at: Date }>(
         "SELECT last_refreshed_at FROM bexio_grants WHERE owner_id = 'workspace:a'",
       )
-    ).rows[0].last_refreshed_at as Date;
+    ).rows[0].last_refreshed_at;
   const before = await lastRefreshed();
   await page.waitForTimeout(1_500); // BEXIO_IDLE_FOR is 1s in e2e
   const sweep = await request.get("/api/cron/refresh-idle", { headers: cron });
@@ -122,11 +124,11 @@ test("signing in again replaces the tokens: still one grant, Better Auth's copy 
   await signIn(page);
   await page.getByTestId("sign-out").click();
   await expect(page.getByTestId("sign-in")).toBeVisible();
-  const { rows: first } = await db.query(
+  const { rows: first } = await db.query<Row>(
     "SELECT id, access_token FROM bexio_grants",
   );
   await signIn(page);
-  const { rows: second } = await db.query(
+  const { rows: second } = await db.query<Row>(
     "SELECT id, access_token FROM bexio_grants",
   );
   expect(second).toHaveLength(1);
@@ -165,7 +167,8 @@ test("a revoked Bexio session shows 'reconnect required', and reconnecting resto
   });
   await page.waitForTimeout(1_500);
   const sweep = await request.get("/api/cron/refresh-idle", { headers: cron });
-  expect((await sweep.json()).reauthRequired).toBeGreaterThanOrEqual(1);
+  const sweepResult = (await sweep.json()) as { reauthRequired: number };
+  expect(sweepResult.reauthRequired).toBeGreaterThanOrEqual(1);
 
   await page.reload();
   const ws = page.getByTestId("workspace-b");

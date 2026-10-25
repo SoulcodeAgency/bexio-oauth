@@ -72,14 +72,14 @@ export class TokenCipher {
         kid: this.#current,
         bxg: hash(binding),
       })
-      .encrypt(this.#key(this.#current));
+      .encrypt(this.#key(this.#current).key);
   }
 
   async decrypt(jwe: string, binding: string): Promise<string> {
     try {
       const { plaintext, protectedHeader } = await compactDecrypt(
         jwe,
-        (header: CompactJWEHeaderParameters) => this.#key(header.kid),
+        (header: CompactJWEHeaderParameters) => this.#key(header.kid).key,
         JWE_ALGORITHMS,
       );
       if (protectedHeader.bxg !== hash(binding)) {
@@ -124,16 +124,17 @@ export class TokenCipher {
     }
   }
 
-  #key(kid: string | undefined): Uint8Array {
+  /** The key for `kid`, with `kid` narrowed to a known key id. */
+  #key(kid: string | undefined): { kid: string; key: Uint8Array } {
     const key = kid === undefined ? undefined : this.#keys.get(kid);
-    if (!key) throw new Error("unknown key id");
-    return key;
+    if (kid === undefined || !key) throw new Error("unknown key id");
+    return { kid, key };
   }
 
   // The flow cookie uses a key derived from the keyring, never the token key itself.
-  #flowKey(kid: string | undefined): Uint8Array {
-    const base = this.#key(kid);
-    let derived = this.#flowKeys.get(kid!);
+  #flowKey(requested: string | undefined): Uint8Array {
+    const { kid, key: base } = this.#key(requested);
+    let derived = this.#flowKeys.get(kid);
     if (!derived) {
       derived = new Uint8Array(
         hkdfSync(
@@ -144,7 +145,7 @@ export class TokenCipher {
           32,
         ),
       );
-      this.#flowKeys.set(kid!, derived);
+      this.#flowKeys.set(kid, derived);
     }
     return derived;
   }

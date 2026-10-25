@@ -23,6 +23,8 @@ bexio-oauth/
 
 npm workspaces tie it together. Only `packages/bexio-oauth` is ever published; everything under `examples/` is `"private": true`.
 
+**How `sql/` reaches `dist/`.** `packages/bexio-oauth/sql/NNNN_*.sql` is the source of truth for the schema; it is published as-is so people can copy the files by hand. `migrations()` (and the `sql` CLI command built on it) does not read those files at runtime: an app's bundler (Next.js bundles server dependencies by default) would move the code away from them. Instead `scripts/generate-migrations.mjs` embeds them into `packages/bexio-oauth/src/migrations.generated.ts`, which is committed. After adding or changing a migration, run `npm run sql:generate` and commit both files. `npm run build` refuses to build from a stale module (`--check`), and `src/sql.test.ts` fails if the embedded SQL differs from `sql/` or if any runtime source or `dist/` file touches the file system or `import.meta`.
+
 ## 2. Local setup
 
 Requirements: Node 24, npm 11, Docker (for Postgres and the local Supabase stack).

@@ -72,7 +72,7 @@ export async function authorize(
   login: NextLogin = {},
   returnTo = "/settings",
 ): Promise<{ request: Request; start: Response }> {
-  const start = await bexio.start(new Request("http://localhost/connect"), {
+  const start = await bexio.start({
     ownerId,
     returnTo,
   });

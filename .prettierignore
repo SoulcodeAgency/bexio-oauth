@@ -7,3 +7,4 @@ package-lock.json
 CHANGELOG.md
 .release-please-manifest.json
 supabase/.temp/
+packages/bexio-oauth/src/migrations.generated.ts
