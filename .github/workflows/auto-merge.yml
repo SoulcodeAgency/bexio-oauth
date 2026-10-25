@@ -47,11 +47,7 @@ jobs:
           # closed: anything not recognised needs a human.
           UPDATE=unknown
           if [[ "$TITLE" =~ from[[:space:]]+([0-9]+)\.([0-9]+)\.([0-9]+).*[[:space:]]to[[:space:]]+([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
-            FROM_MAJOR=${BASH_REMATCH[1]}; FROM_MINOR=${BASH_REMATCH[2]}
-            TO_MAJOR=${BASH_REMATCH[4]}; TO_MINOR=${BASH_REMATCH[5]}
-            if [ "$FROM_MAJOR" != "$TO_MAJOR" ]; then UPDATE=major
-            # Below 1.0 a minor bump may break: treat it like a major.
-            elif [ "$FROM_MAJOR" = "0" ] && [ "$FROM_MINOR" != "$TO_MINOR" ]; then UPDATE=major
+            if [ "${BASH_REMATCH[1]}" != "${BASH_REMATCH[4]}" ]; then UPDATE=major
             else UPDATE=minor-or-patch; fi
           # Only the groups defined in dependabot.yml, which contain minor/patch updates only.
           elif [[ "$TITLE" =~ bump\ the\ (production-dependencies|development-dependencies|github-actions)\ group ]]; then

@@ -155,7 +155,7 @@ flowchart TD
     S -->|yes| Who{"PR source"}
     Who -->|Dependabot| U{"update type<br/>from the PR title"}
     U -->|"patch / minor / group"| AM["gh pr merge --squash<br/>--match-head-commit, as App"]
-    U -->|"major, 0.x minor, unknown"| Cm1["comment: needs human review"]
+    U -->|"major, unknown"| Cm1["comment: needs human review"]
     Who -->|"release PR by the App"| RC{"every package commit since last tag:<br/>author Dependabot AND fix(deps)?"}
     RC -->|yes| AM
     RC -->|no| Cm2["comment: feature release,<br/>merge manually"]
@@ -163,7 +163,7 @@ flowchart TD
 ```
 
 - **Why `workflow_run` and not `pull_request`:** a run triggered by Dependabot on `pull_request` gets a read-only token and no regular secrets. `workflow_run` runs in the default-branch context, so the App key and the normal permissions are available.
-- **Update type from the PR title.** `dependabot/fetch-metadata` needs the `pull_request` payload, which a `workflow_run` doesn't have, so the workflow parses "bump x from 1.2.3 to 1.3.0". It fails closed: a major bump, a minor bump below 1.0, or a title it doesn't recognise needs a human. Grouped PRs are only trusted for the groups defined in `dependabot.yml`, which contain minor and patch updates only.
+- **Update type from the PR title.** `dependabot/fetch-metadata` needs the `pull_request` payload, which a `workflow_run` doesn't have, so the workflow parses "bump x from 1.2.3 to 1.3.0". It fails closed: a major bump, or a title it doesn't recognise, needs a human. Minor and patch bumps merge automatically, including `0.x` minors. Grouped PRs are only trusted for the groups defined in `dependabot.yml`, which contain minor and patch updates only.
 - **Direct merge, not GitHub's auto-merge.** CI holds every required check, so a successful CI run means the PR is mergeable; `--match-head-commit` merges only the commit CI just checked, and nothing is left armed on the PR if a later push changes it.
 - **Release PRs are only considered when opened by the automation App**, never for another branch that happens to be named `release-please--…`. Only commits that touch `packages/bexio-oauth` count, the same ones release-please puts into the release (`scripts/release-classify.mjs`, unit-tested). The release PR's head commit must also be the App's (author and committer, with GitHub's verified signature), so nobody can push a change onto the release branch and have it merged automatically.
 - **The human gate:** release PRs containing a `feat`, a human-written `fix` or a breaking change are never auto-merged. Merging those is the release decision. Releases made up only of dependency fixes (typically security updates) ship without waiting for anyone.
@@ -173,10 +173,10 @@ flowchart TD
 ```mermaid
 flowchart LR
     subgraph sec ["Security updates"]
-        A1["advisory published"] --> A2["PR opened immediately<br/>no schedule, no cooldown"]
+        A1["advisory published"] --> A2["PR opened immediately<br/>no schedule, no wait"]
     end
     subgraph ver ["Version updates"]
-        B1["weekly, grouped"] --> B2{"cooldown passed?<br/>patch 3d · minor 7d · major 30d"}
+        B1["weekly, grouped"] --> B2{"release at least 3 days old?<br/>(Dependabot default)"}
         B2 -->|yes| B3["PR opened"]
     end
     A2 & B3 --> P{"commit prefix"}
@@ -189,7 +189,7 @@ flowchart LR
 
 Version updates are grouped weekly, with `versioning-strategy: increase`, so an update raises the range in `package.json` too. GitHub Actions are pinned by commit SHA and updated by Dependabot as well. The commit prefix alone doesn't decide a release: release-please only releases for changes under `packages/bexio-oauth`, so a `fix(deps)` bump of an example app's dependency cuts no release.
 
-The cooldown is supply-chain protection. An auto-merged, auto-published dependency bump reaches our users quickly, so routine updates wait long enough for a compromised release to be caught and pulled first. Security updates skip the wait on purpose.
+There is no custom cooldown. Dependabot's built-in default applies: a version update is only proposed once the new release is 3 days old, which gives the ecosystem time to catch and pull a compromised release before it reaches our users through an auto-merge. Security updates skip that wait.
 
 Our users resolve `openid-client` and `jose` within our version ranges anyway (lockfiles aren't published). A `fix(deps)` release mainly **raises the minimum version**, which makes sure nobody installing our latest release gets a vulnerable dependency.
 
