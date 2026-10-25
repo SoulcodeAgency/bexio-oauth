@@ -18,6 +18,9 @@ const JWE_ALGORITHMS = {
   contentEncryptionAlgorithms: ["A256GCM"],
 };
 
+/** 32 bytes as unpadded base64url: exactly 43 characters of the base64url alphabet. */
+const KEY_FORMAT = /^[A-Za-z0-9_-]{43}$/;
+
 /** A new random key for the keyring, base64url-encoded. */
 export function generateKey(): string {
   return randomBytes(32).toString("base64url");
@@ -46,14 +49,16 @@ export class TokenCipher {
     }
     this.#keys = new Map();
     for (const [kid, encoded] of Object.entries(keyring.keys)) {
-      const bytes = Buffer.from(encoded, "base64url");
-      if (bytes.length !== 32) {
+      // Strict: Buffer.from(…, "base64url") silently drops characters it
+      // doesn't know, so a mangled key could still "decode" to 32 bytes and
+      // then differ between environments.
+      if (typeof encoded !== "string" || !KEY_FORMAT.test(encoded)) {
         throw new BexioOAuthError(
           "invalid_config",
-          `key "${kid}" must be 32 bytes, base64url-encoded`,
+          `key "${kid}" must be 32 bytes, base64url-encoded without padding (43 characters)`,
         );
       }
-      this.#keys.set(kid, new Uint8Array(bytes));
+      this.#keys.set(kid, new Uint8Array(Buffer.from(encoded, "base64url")));
     }
     if (!this.#keys.has(keyring.current)) {
       throw new BexioOAuthError(

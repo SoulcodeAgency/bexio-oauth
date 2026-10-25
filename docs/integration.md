@@ -178,6 +178,8 @@ and store the keyring as one env var:
 BEXIO_TOKEN_KEYS='{"current":"k1","keys":{"k1":"<output of keygen>"}}'
 ```
 
+Each key must be exactly what `keygen` prints: 32 bytes as unpadded base64url, 43 characters. Anything else (padding, a stray quote, the standard base64 alphabet) is refused with `invalid_config` at startup, because a lenient decode could accept a mangled key that then differs between environments.
+
 **Rotating a key:** add a new key and point `current` at it, keeping the old one:
 
 ```bash

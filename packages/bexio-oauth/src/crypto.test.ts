@@ -55,6 +55,21 @@ describe("TokenCipher", () => {
     expect(
       () => new TokenCipher({ current: "k1", keys: { k1: "short" } }),
     ).toThrow(/32 bytes/);
+    // Same byte length, but not a clean base64url string: a mangled copy
+    // (stray quote, padding, standard base64 alphabet) must not be accepted.
+    for (const mangled of [
+      `"${k1}"`,
+      `${k1}=`,
+      `${k1.slice(0, 41)}+/`,
+      `${k1} `,
+    ]) {
+      expect(
+        () => new TokenCipher({ current: "k1", keys: { k1: mangled } }),
+      ).toThrow(/base64url/);
+    }
+    expect(
+      () => new TokenCipher({ current: "k1", keys: { k1 } }),
+    ).not.toThrow();
     expect(() => new TokenCipher({ current: "nope", keys: { k1 } })).toThrow(
       /not in keys/,
     );
