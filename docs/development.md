@@ -103,12 +103,14 @@ flowchart LR
     PR["pull_request"] --> T["PR title<br/>Conventional Commits"]
     PR --> E["examples e2e<br/>better-auth · supabase<br/>against mock-bexio"]
     PR --> C["npm run check<br/>format · lint · typecheck · unit · integration"]
-    T & C & E --> R{"All required<br/>checks green?"}
+    PR --> D["dependency-review<br/>new deps: vulnerabilities, licenses"]
+    PR --> Q["CodeQL (codeql.yml)<br/>TypeScript · workflows"]
+    T & C & E & D & Q --> R{"All required<br/>checks green?"}
     R -->|yes| M["mergeable"]
     R -->|no| X["blocked"]
 ```
 
-The `main` ruleset requires `check`, `e2e` and `pr-title`, allows squash merges only, and blocks direct pushes. Nobody bypasses it, the App included: release-please only pushes to its own `release-please--*` branch. The auto-merge workflow only acts after CI completed successfully, and GitHub still refuses a merge while a required check is missing or red.
+The `main` ruleset requires `check`, `e2e`, `pr-title`, `dependency-review` and both `analyze` jobs, allows squash merges only, and blocks direct pushes. `dependency-review` fails a PR that adds a dependency with a known vulnerability of moderate severity or higher. CodeQL (`codeql.yml`) also runs on pushes to `main` and weekly; its alerts show in the Security tab. Nobody bypasses it, the App included: release-please only pushes to its own `release-please--*` branch. The auto-merge workflow only acts after CI completed successfully, and GitHub still refuses a merge while a required check is missing or red.
 
 ### 5.3 Release (`release.yml`)
 
@@ -217,5 +219,6 @@ Every release after that is automated.
 - [ ] `soulcode-automation` App installed on the repo (contents + pull-requests write); variable `SC_AUTOMATION_CLIENT_ID`, secret `SC_AUTOMATION_PRIVATE_KEY`.
 - [ ] "Dependabot security updates" enabled.
 - [ ] Environment `npm`, deployment branches restricted to `main`.
-- [ ] `main` ruleset: PRs only, squash only, required checks `check`, `e2e` and `pr-title`, no bypass actors.
+- [ ] `main` ruleset: PRs only, squash only, required checks `check`, `e2e`, `pr-title`, `dependency-review`, `analyze (javascript-typescript)` and `analyze (actions)`, no bypass actors.
+- [ ] Code security: "Dependency graph" and "Code scanning" enabled (CodeQL via `codeql.yml`, not the default setup).
 - [ ] npm: trusted publisher configured, tokens disallowed (after the bootstrap publish).

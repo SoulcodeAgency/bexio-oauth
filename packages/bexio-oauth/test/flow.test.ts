@@ -57,7 +57,7 @@ describe.each(backends)("$name store", ({ make }) => {
   describe("start", () => {
     it("redirects to Bexio with PKCE S256, state, nonce and merged scopes, and sets the flow cookie", async () => {
       const bexio = client(mock, store);
-      const res = await bexio.start(new Request("http://app.test/connect"), {
+      const res = await bexio.start(new Request("http://localhost/connect"), {
         ownerId: "ws-1",
         returnTo: "/settings",
       });
@@ -71,7 +71,7 @@ describe.each(backends)("$name store", ({ make }) => {
       expect(url.searchParams.get("state")).toBeTruthy();
       expect(url.searchParams.get("nonce")).toBeTruthy();
       expect(url.searchParams.get("redirect_uri")).toBe(
-        "http://app.test/api/bexio/callback",
+        "http://localhost/api/bexio/callback",
       );
       expect(url.searchParams.get("scope")!.split(" ")).toEqual(
         expect.arrayContaining([
@@ -134,7 +134,7 @@ describe.each(backends)("$name store", ({ make }) => {
         "/x/..//evil.example",
       ]) {
         await expect(
-          bexio.start(new Request("http://app.test/"), {
+          bexio.start(new Request("http://localhost/"), {
             ownerId: "ws",
             returnTo,
           }),
@@ -155,7 +155,7 @@ describe.each(backends)("$name store", ({ make }) => {
       const res = await bexio.callback(request, { ownerId: "ws-1" });
 
       expect(res.status).toBe(302);
-      expect(res.headers.get("location")).toBe("http://app.test/settings");
+      expect(res.headers.get("location")).toBe("http://localhost/settings");
       expect(res.headers.getSetCookie()[0]).toMatch(
         /^bexio_oauth_flow=; .*Max-Age=0/,
       );
@@ -273,7 +273,7 @@ describe.each(backends)("$name store", ({ make }) => {
       ).rejects.toMatchObject({ code: "access_denied" });
       const res = await bexio.callback(request, { ownerId: "ws-1" });
       expect(res.headers.get("location")).toBe(
-        "http://app.test/settings?bexio_error=access_denied",
+        "http://localhost/settings?bexio_error=access_denied",
       );
     });
 
@@ -623,6 +623,19 @@ describe.each(backends)("$name store", ({ make }) => {
       expect(() => client(mock, store, { refreshLockTtl: "5s" })).toThrow(
         /at least 30s/,
       );
+    });
+
+    it("refuses a plain-http redirect URI unless it is a loopback host", () => {
+      expect(() =>
+        client(mock, store, { redirectUri: "http://app.example.com/cb" }),
+      ).toThrow(/redirectUri must use https/);
+      for (const ok of [
+        "http://localhost:3000/cb",
+        "http://127.0.0.1/cb",
+        "https://app.example.com/cb",
+      ]) {
+        expect(() => client(mock, store, { redirectUri: ok })).not.toThrow();
+      }
     });
   });
 

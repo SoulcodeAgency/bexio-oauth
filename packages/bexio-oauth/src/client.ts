@@ -247,6 +247,20 @@ export function createBexioOAuth(config: BexioOAuthConfig) {
   const issuer = config.issuer ?? BEXIO_ISSUER;
   const apiBaseUrl = config.apiBaseUrl ?? BEXIO_API_BASE_URL;
   const redirectUri = new URL(config.redirectUri);
+  // Plain http only for local development: the flow cookie would otherwise
+  // travel without `Secure`.
+  if (
+    redirectUri.protocol !== "https:" &&
+    !(
+      redirectUri.protocol === "http:" &&
+      LOOPBACK_HOSTS.has(redirectUri.hostname)
+    )
+  ) {
+    throw new BexioOAuthError(
+      "invalid_config",
+      "redirectUri must use https (http is allowed for loopback hosts only)",
+    );
+  }
   const scope = [...new Set([...BASE_SCOPES, ...(config.scopes ?? [])])].join(
     " ",
   );
@@ -315,12 +329,6 @@ export function createBexioOAuth(config: BexioOAuthConfig) {
   async function resolveGrant(selector: GrantSelector): Promise<GrantRecord> {
     if (!selector?.ownerId)
       throw new BexioOAuthError("invalid_config", "ownerId is required");
-    if (
-      selector.grantId !== undefined &&
-      !/^[0-9a-f-]{36}$/i.test(selector.grantId)
-    ) {
-      throw new BexioOAuthError("not_connected", "no grant with that id");
-    }
     const rows = await store.findGrants(selector);
     if (rows.length === 0)
       throw new BexioOAuthError("not_connected", "owner has no matching grant");

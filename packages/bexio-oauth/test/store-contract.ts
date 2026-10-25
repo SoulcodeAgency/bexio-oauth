@@ -95,6 +95,13 @@ export function storeContract(name: string, setup: () => Promise<GrantStore>) {
         await store.findGrants({ ownerId: "owner-1", grantId: a.id }),
       ).toEqual([a]);
       expect(await store.getGrant(a.id)).toEqual(a);
+      // Not a uuid: no row, no driver error.
+      expect(
+        await store.findGrants({ ownerId: "owner-1", grantId: "not-a-uuid" }),
+      ).toEqual([]);
+      expect(await store.getGrant("------------------------------------")).toBe(
+        null,
+      );
     });
 
     it("refresh lock: one winner, honors the condition, expires", async () => {

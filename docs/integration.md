@@ -148,7 +148,7 @@ export const bexio = createBexioOAuth({
 | Option                     | Required | Notes                                                                                                                                                       |
 | -------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `clientId`, `clientSecret` | yes      | From your Bexio OAuth app.                                                                                                                                  |
-| `redirectUri`              | yes      | Must exactly match a redirect URI registered at Bexio.                                                                                                      |
+| `redirectUri`              | yes      | Must exactly match a redirect URI registered at Bexio. `https`, or plain `http` on a loopback host (`localhost`, `127.0.0.1`) for local development.        |
 | `scopes`                   | no       | Bexio API scopes. Always added: `openid profile email company_profile offline_access`. `offline_access` is what makes background refresh possible.          |
 | `keys`                     | yes      | Encryption keyring, see below.                                                                                                                              |
 | `store`                    | yes      | `postgresStore(sqlClient)` or `memoryStore()` (tests only).                                                                                                 |
@@ -371,7 +371,7 @@ All errors are `BexioOAuthError` with a `code` (`isBexioOAuthError(err, "reauth_
 - **Encryption:** each token is a compact JWE (`alg: dir`, `enc: A256GCM`) produced by `jose`, with the key id (`kid`) in the header. A hash of the grant's identity (owner, company, user) is part of the authenticated header and checked on decrypt, so ciphertext copied into another row fails to decrypt.
 - **Keys** live in your config, never in the database. Anyone holding both a database dump and the keyring can read the tokens; keep them apart.
 - **The OIDC protocol** is handled by `openid-client` (OpenID Certified relying-party library): PKCE S256, state, nonce, ID-token signature, issuer and audience checks.
-- **The flow cookie** is encrypted (JWE, with a key derived from your keyring via HKDF), HttpOnly, SameSite=Lax, path-scoped, 10 minutes, deleted on use, and `Secure` whenever `redirectUri` is https.
+- **The flow cookie** is encrypted (JWE, with a key derived from your keyring via HKDF), HttpOnly, SameSite=Lax, path-scoped, 10 minutes, deleted on use, and `Secure` whenever `redirectUri` is https. A plain-http `redirectUri` is refused unless its host is loopback, so the cookie never travels unprotected to a real host.
 - **Database access:** only your server needs it. On Supabase, enable RLS on `bexio_grants` without policies (§4).
 - **Permissions:** an access token acts with the connecting Bexio user's rights in that company. If that user leaves the company or loses rights, calls start failing, and a different user has to reconnect.
 
