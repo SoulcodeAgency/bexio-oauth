@@ -565,14 +565,15 @@ export async function startMockBexio(
     return send(res, 404, { error: "not_found" });
   }
 
-  const server = createServer((req, res) => {
+  const listener = (req: IncomingMessage, res: ServerResponse) => {
     handle(req, res).catch((error: unknown) => {
       send(res, 500, {
         error: "server_error",
         error_description: String(error),
       });
     });
-  });
+  };
+  const server = createServer(listener);
   await new Promise<void>((resolve) =>
     server.listen(options.port ?? 0, options.host ?? "127.0.0.1", resolve),
   );

@@ -64,11 +64,11 @@ All automated layers run on every pull request. There are no nightly or schedule
 
 Three workflows:
 
-| Workflow         | Trigger                  | Job                                                                                   |
-| ---------------- | ------------------------ | ------------------------------------------------------------------------------------- |
-| `ci.yml`         | every PR, push to `main` | `npm run check`, package-contents check, PR-title check (examples e2e: added with #2) |
-| `release.yml`    | push to `main`           | release-please; publish to npm when a release was created                             |
-| `auto-merge.yml` | CI finished successfully | auto-merge eligible Dependabot and release PRs                                        |
+| Workflow         | Trigger                  | Job                                                                   |
+| ---------------- | ------------------------ | --------------------------------------------------------------------- |
+| `ci.yml`         | every PR, push to `main` | `npm run check`, package-contents check, PR-title check, examples e2e |
+| `release.yml`    | push to `main`           | release-please; publish to npm when a release was created             |
+| `auto-merge.yml` | CI finished successfully | auto-merge eligible Dependabot and release PRs                        |
 
 Every write to the repo (opening the release PR, merging, tagging) runs as the org's **`soulcode-automation` GitHub App**, not as `GITHUB_TOKEN`. GitHub starts no workflows from events made with `GITHUB_TOKEN`: CI would never run on the release PR, and a merge would never trigger `release.yml`. The App's client id is the repo variable `SC_AUTOMATION_CLIENT_ID`; its private key is the secret `SC_AUTOMATION_PRIVATE_KEY`. Forks need their own App, or they can skip releasing altogether.
 
@@ -76,7 +76,7 @@ Every write to the repo (opening the release PR, merging, tagging) runs as the o
 
 ```mermaid
 flowchart TD
-    A["PR opened<br/>by a human or Dependabot"] --> B{"ci.yml<br/>check + PR title"}
+    A["PR opened<br/>by a human or Dependabot"] --> B{"ci.yml<br/>check + e2e + PR title"}
     B -->|red| A
     B -->|green| C{"Who merges?"}
     C -->|human PR| D["Human squash-merges"]
@@ -101,13 +101,14 @@ flowchart TD
 ```mermaid
 flowchart LR
     PR["pull_request"] --> T["PR title<br/>Conventional Commits"]
+    PR --> E["examples e2e<br/>better-auth · supabase<br/>against mock-bexio"]
     PR --> C["npm run check<br/>format · lint · typecheck · unit · integration"]
-    T & C --> R{"All required<br/>checks green?"}
+    T & C & E --> R{"All required<br/>checks green?"}
     R -->|yes| M["mergeable"]
     R -->|no| X["blocked"]
 ```
 
-The `main` ruleset requires `check`, `e2e` (from the example apps, #2) and `pr-title`, allows squash merges only, and blocks direct pushes. Nobody bypasses it, the App included: release-please only pushes to its own `release-please--*` branch. The auto-merge workflow only acts after CI completed successfully, and GitHub still refuses a merge while a required check is missing or red.
+The `main` ruleset requires `check`, `e2e` and `pr-title`, allows squash merges only, and blocks direct pushes. Nobody bypasses it, the App included: release-please only pushes to its own `release-please--*` branch. The auto-merge workflow only acts after CI completed successfully, and GitHub still refuses a merge while a required check is missing or red.
 
 ### 5.3 Release (`release.yml`)
 
@@ -216,5 +217,5 @@ Every release after that is automated.
 - [ ] `soulcode-automation` App installed on the repo (contents + pull-requests write); variable `SC_AUTOMATION_CLIENT_ID`, secret `SC_AUTOMATION_PRIVATE_KEY`.
 - [ ] "Dependabot security updates" enabled.
 - [ ] Environment `npm`, deployment branches restricted to `main`.
-- [ ] `main` ruleset: PRs only, squash only, required checks `check`, `e2e` (from the example apps, #2) and `pr-title`, no bypass actors.
+- [ ] `main` ruleset: PRs only, squash only, required checks `check`, `e2e` and `pr-title`, no bypass actors.
 - [ ] npm: trusted publisher configured, tokens disallowed (after the bootstrap publish).
