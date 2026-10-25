@@ -5,7 +5,8 @@
  * Behaves like the real thing where it matters:
  * - authorization code flow with PKCE (S256), state, nonce, `iss` in the response;
  * - RS256-signed ID and access tokens with Bexio's claim split (company claims
- *   in the ID token and userinfo, `company_user_id`/`login_id` in the access token);
+ *   in the ID token and userinfo, `company_user_id`/`login_id` in the access token,
+ *   `given_name`/`family_name` but no `name`);
  * - rotating refresh tokens; reusing one revokes the whole session (Keycloak's
  *   refresh-token reuse detection);
  * - token revocation, userinfo, `GET /3.0/permissions`, `GET /2.0/company_profile`.
@@ -278,7 +279,6 @@ export async function startMockBexio(
     return {
       email: user.email,
       email_verified: true,
-      name: `${user.givenName} ${user.familyName}`,
       given_name: user.givenName,
       family_name: user.familyName,
       preferred_username: user.email,

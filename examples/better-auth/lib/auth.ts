@@ -27,6 +27,13 @@ function buildAuth() {
               ...(process.env.BEXIO_SCOPES ?? "").split(" ").filter(Boolean),
             ],
             pkce: true,
+            // Bexio sends given_name and family_name, but no name claim.
+            mapProfileToUser: (profile) => {
+              const name = [profile.given_name, profile.family_name]
+                .filter((part) => typeof part === "string" && part)
+                .join(" ");
+              return name ? { name } : {};
+            },
           },
         ],
       }),

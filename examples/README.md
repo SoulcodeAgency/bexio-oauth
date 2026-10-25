@@ -24,6 +24,7 @@ The Supabase example needs Docker: `npm run db:start` in `examples/supabase` sta
 
 ## Better Auth
 
+- **The display name is mapped.** Bexio sends `given_name` and `family_name` but no `name`, so `mapProfileToUser` in [`lib/auth.ts`](better-auth/lib/auth.ts) builds Better Auth's `name` from them.
 - **Don't copy `AUTH_RATE_LIMIT=off` to production.** The e2e suite turns Better Auth's sign-in rate limiting off because it signs in many times in a row. Leave the variable unset in real deployments; rate limiting then stays on.
 
 ## Supabase

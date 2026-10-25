@@ -57,6 +57,10 @@ test("sign in with Bexio: the grant is saved, Better Auth keeps no tokens, disco
   page,
 }) => {
   await signIn(page);
+  // Bexio sends no name claim; the app maps given_name and family_name.
+  await expect(page.getByRole("heading", { level: 1 })).toContainText(
+    "Hello Ada Lovelace",
+  );
   const own = page.getByTestId(/^grants-(?!workspace)/);
   await expect(own.getByTestId("grant")).toContainText("Alpha AG");
   await expect(own.getByTestId("grant")).toContainText("(admin)");
