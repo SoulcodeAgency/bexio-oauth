@@ -4,8 +4,8 @@ Runnable apps that show `@soulcode/bexio-oauth` inside real auth stacks. They ar
 
 | App                                        | Auth                             | Database                              | Shows                                                                                                                                                                                                      | e2e               |
 | ------------------------------------------ | -------------------------------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
-| [`better-auth`](better-auth)               | Better Auth `genericOAuth`       | Plain Postgres (`pg`)                 | **Sign in with Bexio** → `saveGrant`; **Connect Bexio** for workspaces (`authorizeOwner`); a background job; the `refreshIdle` cron; reconnect after `reauth_required`; two owners sharing a Bexio account | 5 tests, every PR |
-| [`supabase`](supabase)                     | Supabase Auth (email + password) | Local Supabase (`pg` to its Postgres) | **Connect Bexio** for a Supabase user; RLS keeps `bexio_grants` unreadable through the API; the **Sign in with Bexio** recipe (manual check only, see below)                                               | 1 test, every PR  |
+| [`better-auth`](better-auth)               | Better Auth `genericOAuth`       | Plain Postgres (`pg`)                 | **Sign in with Bexio** → `saveGrant`; **Connect Bexio** for workspaces (`authorizeOwner`); a background job; the `refreshIdle` cron; reconnect after `reauth_required`; two owners sharing a Bexio account | 6 tests, every PR |
+| [`supabase`](supabase)                     | Supabase Auth (email + password) | Local Supabase (`pg` to its Postgres) | **Connect Bexio** for a Supabase user; RLS keeps `bexio_grants` unreadable through the API; the **Sign in with Bexio** recipe (alpha, see [Supabase](#supabase))                                           | 1 test, every PR  |
 | [`_shared/mock-bexio`](_shared/mock-bexio) | –                                | –                                     | A mock of Bexio's Keycloak (PKCE, rotating refresh tokens with reuse detection, Bexio's claim split) and `/3.0/permissions`                                                                                | unit tests        |
 
 ## Running them
@@ -22,22 +22,20 @@ The Supabase example needs Docker: `npm run db:start` in `examples/supabase` sta
 
 `npm run test:e2e` in either app starts the mock and the app itself (Playwright `webServer`).
 
-## Findings: can the auth framework hand over Bexio's tokens?
+## Better Auth
 
-**Better Auth (`genericOAuth`): yes, tested.** Better Auth writes the provider tokens, including the refresh token, to its `account` row during the callback. An `after` hook passes them to `saveGrant()` as soon as a session exists and then clears Better Auth's copy, so the grant is the only place they live (asserted in e2e). Two details:
+- **Don't copy `AUTH_RATE_LIMIT=off` to production.** The e2e suite turns Better Auth's sign-in rate limiting off because it signs in many times in a row. Leave the variable unset in real deployments; rate limiting then stays on.
 
-- The account `update` hook doesn't receive the user id on a repeat sign-in, so the hand-over happens in `hooks.after`, not in `databaseHooks`.
-- Better Auth rate-limits sign-ins in production; the e2e suite turns that off (`AUTH_RATE_LIMIT=off`).
+## Supabase
 
-**Supabase Auth (custom OIDC provider): can't be tested against a mock; check manually with live Bexio.**
+> **Alpha.** "Sign in with Bexio" through Supabase Auth needs validation against a production Bexio account before you rely on it. "Connect Bexio" for Supabase users is not affected; it is covered by the e2e test.
 
-- Custom providers are created through the Auth admin API (`POST /auth/v1/admin/custom-providers`, or `supabase.auth.admin.customProviders.createProvider`). The Supabase CLI has no `config.toml` option for them.
-- Supabase Auth only accepts an **HTTPS** issuer (`URL must use HTTPS`) and refuses issuers on **private network addresses** (`URL cannot resolve to private network addresses`). A local mock can't satisfy that, even with a trusted certificate, so this path has no automated test.
-- The recipe is implemented in [`supabase/app/auth/callback/route.ts`](supabase/app/auth/callback/route.ts): `exchangeCodeForSession()` returns `provider_token` and `provider_refresh_token` once. They go to `saveGrant()`, and the Supabase session is then re-saved with `setSession()` so the auth cookie (readable by JavaScript) no longer holds them; if that fails, the local session is dropped. Enable it with `BEXIO_SUPABASE_PROVIDER=custom:bexio` after registering the provider against `https://auth.bexio.com/realms/bexio` with the scopes `openid profile email company_profile offline_access`.
-- **Still to verify with live Bexio:**
+- **The provider isn't set up in `config.toml`.** Create the custom OIDC provider through the Auth admin API (`supabase.auth.admin.customProviders.createProvider`) with issuer `https://auth.bexio.com/realms/bexio` and scopes `openid profile email company_profile offline_access`. Then set `BEXIO_SUPABASE_PROVIDER=custom:bexio`.
+- **There is no automated test for it.** Supabase Auth only accepts a public HTTPS issuer, so it can't run against the local mock.
+- **Open questions for the validation:**
   - Does Supabase return `provider_refresh_token` for a custom OIDC provider?
-  - Does it pass `offline_access` and `company_profile` through?
-  - Do plan limits apply?
+  - Does it pass the `offline_access` and `company_profile` scopes through?
+  - Do plan limits apply to custom providers?
 
 ## Redirect URIs to register at Bexio
 
@@ -57,4 +55,4 @@ Run once per release candidate, in both apps, with a real Bexio OAuth app (`.env
 - [ ] Forced refresh: set the grant's `access_expires_at` to the past in the database, reload; the call still succeeds and `last_refreshed_at` moves.
 - [ ] Disconnect: the grant disappears, and the refresh token no longer works at Bexio.
 - [ ] Two owners: connect the same Bexio user and company for workspace a and b, disconnect a, then force a refresh of b. It must still work. (Keycloak's revocation has been known to end all of a user's offline sessions for a client; if it does, the library must stop revoking on disconnect.)
-- [ ] Supabase only: Sign in with Bexio through the custom provider (answers the open questions above).
+- [ ] Supabase only: Sign in with Bexio through the custom provider (answers the open questions in [Supabase](#supabase)).
