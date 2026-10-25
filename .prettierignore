@@ -1,0 +1,9 @@
+dist/
+coverage/
+.next/
+playwright-report/
+test-results/
+package-lock.json
+CHANGELOG.md
+.release-please-manifest.json
+supabase/.temp/

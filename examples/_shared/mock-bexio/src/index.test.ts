@@ -1,0 +1,104 @@
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { decodeJwt } from "jose";
+import { startMockBexio, type MockBexio } from "./index.ts";
+
+let mock: MockBexio;
+
+const json = async <T>(res: Response | Promise<Response>) =>
+  (await (await res).json()) as T;
+beforeAll(async () => {
+  mock = await startMockBexio();
+});
+afterAll(() => mock.close());
+
+const tokenUrl = () => `${mock.issuer}/protocol/openid-connect/token`;
+const form = (body: Record<string, string>) =>
+  fetch(tokenUrl(), {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: mock.clientId,
+      client_secret: mock.clientSecret,
+      ...body,
+    }),
+  });
+
+describe("mock-bexio", () => {
+  it("serves discovery and keys", async () => {
+    const meta = await json<{
+      issuer: string;
+      code_challenge_methods_supported: string[];
+      jwks_uri: string;
+    }>(fetch(`${mock.issuer}/.well-known/openid-configuration`));
+    expect(meta.issuer).toBe(mock.issuer);
+    expect(meta.code_challenge_methods_supported).toEqual(["S256"]);
+    const jwks = await json<{ keys: unknown[] }>(fetch(meta.jwks_uri));
+    expect(jwks.keys[0]).toMatchObject({ kty: "RSA", alg: "RS256" });
+  });
+
+  it("issues Bexio-shaped tokens: company claims in the ID token, company_user_id in the access token", async () => {
+    const tokens = await mock.issueTokens({ companyId: "cmp-beta" });
+    expect(decodeJwt(tokens.id_token!)).toMatchObject({
+      company_id: "cmp-beta",
+      company_name: "Beta GmbH",
+    });
+    const access = decodeJwt(tokens.access_token);
+    expect(access).toMatchObject({ company_user_id: 7, azp: mock.clientId });
+    expect(access.company_id).toBeUndefined();
+  });
+
+  it("rotates refresh tokens and kills the session on reuse", async () => {
+    const tokens = await mock.issueTokens();
+    const first = await form({
+      grant_type: "refresh_token",
+      refresh_token: tokens.refresh_token,
+    });
+    expect(first.status).toBe(200);
+    const rotated = (await json<{ refresh_token: string }>(first))
+      .refresh_token;
+    expect(rotated).not.toBe(tokens.refresh_token);
+
+    const reuse = await form({
+      grant_type: "refresh_token",
+      refresh_token: tokens.refresh_token,
+    });
+    expect(reuse.status).toBe(400);
+    expect((await json<{ error: string }>(reuse)).error).toBe("invalid_grant");
+    // Reuse revoked the session, so the rotated token is dead too.
+    expect(
+      (await form({ grant_type: "refresh_token", refresh_token: rotated }))
+        .status,
+    ).toBe(400);
+  });
+
+  it("rejects bad client credentials", async () => {
+    const res = await fetch(tokenUrl(), {
+      method: "POST",
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: "x",
+        client_id: "x",
+        client_secret: "y",
+      }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("serves /3.0/permissions with the admin flag", async () => {
+    const admin = await mock.issueTokens({ companyId: "cmp-alpha" });
+    const member = await mock.issueTokens({ companyId: "cmp-beta" });
+    const perms = async (token: string) =>
+      (
+        await json<{ permissions: { admin: { activation: string } } }>(
+          fetch(`${mock.apiBaseUrl}/3.0/permissions`, {
+            headers: { Authorization: `Bearer ${token}` },
+          }),
+        )
+      ).permissions.admin.activation;
+    expect(await perms(admin.access_token)).toBe("enabled");
+    expect(await perms(member.access_token)).toBe("disabled");
+    expect((await fetch(`${mock.apiBaseUrl}/3.0/permissions`)).status).toBe(
+      401,
+    );
+  });
+});

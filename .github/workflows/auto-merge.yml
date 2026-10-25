@@ -1,0 +1,161 @@
+name: Auto-merge
+
+# Runs after CI finished green, in the default-branch context: unlike a
+# Dependabot-triggered pull_request run, it has the regular secrets and a full
+# token. CI holds every required check, so when it completed successfully the
+# PR is mergeable: merge directly, and only the commit CI just checked
+# (--match-head-commit). No auto-merge state is left behind on the PR.
+# All writes run as the automation App: a merge made with GITHUB_TOKEN would
+# not trigger release.yml. See docs/development.md §5.4.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  dependabot:
+    name: Dependabot PR
+    runs-on: ubuntu-latest
+    if: >-
+      vars.SC_AUTOMATION_CLIENT_ID != '' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.actor.login == 'dependabot[bot]' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    steps:
+      - id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          PR=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$HEAD_BRANCH" --state open \
+            --json number,title,headRefOid,author \
+            --jq "first(.[] | select(.headRefOid == \"$HEAD_SHA\"))")
+          if [ -z "$PR" ] || [ "$(echo "$PR" | jq -r '.author.login')" != "app/dependabot" ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          TITLE=$(echo "$PR" | jq -r '.title')
+          # Classified from the PR title (dependabot/fetch-metadata needs the
+          # pull_request payload, which a workflow_run doesn't have). Fails
+          # closed: anything not recognised needs a human.
+          UPDATE=unknown
+          if [[ "$TITLE" =~ from[[:space:]]+([0-9]+)\.([0-9]+)\.([0-9]+).*[[:space:]]to[[:space:]]+([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+            if [ "${BASH_REMATCH[1]}" != "${BASH_REMATCH[4]}" ]; then UPDATE=major
+            else UPDATE=minor-or-patch; fi
+          # Only the groups defined in dependabot.yml, which contain minor/patch updates only.
+          elif [[ "$TITLE" =~ bump\ the\ (production-dependencies|development-dependencies|github-actions)\ group ]]; then
+            UPDATE=group
+          fi
+          {
+            echo "found=true"
+            echo "number=$(echo "$PR" | jq -r '.number')"
+            echo "update=$UPDATE"
+          } >> "$GITHUB_OUTPUT"
+      - id: app-token
+        if: steps.pr.outputs.found == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.SC_AUTOMATION_CLIENT_ID }}
+          private-key: ${{ secrets.SC_AUTOMATION_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+      - if: steps.pr.outputs.found == 'true' && (steps.pr.outputs.update == 'minor-or-patch' || steps.pr.outputs.update == 'group')
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          NUMBER: ${{ steps.pr.outputs.number }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: gh pr merge "$NUMBER" --repo "$GITHUB_REPOSITORY" --squash --match-head-commit "$HEAD_SHA"
+      - if: steps.pr.outputs.found == 'true' && (steps.pr.outputs.update == 'major' || steps.pr.outputs.update == 'unknown')
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          NUMBER: ${{ steps.pr.outputs.number }}
+          UPDATE: ${{ steps.pr.outputs.update }}
+        run: |
+          MARKER="<!-- auto-merge:skipped -->"
+          if ! gh pr view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments[].body' | grep -qF "$MARKER"; then
+            gh pr comment "$NUMBER" --repo "$GITHUB_REPOSITORY" \
+              --body "$MARKER Not auto-merged: update type \`$UPDATE\` needs a human review."
+          fi
+
+  release:
+    name: Release PR
+    runs-on: ubuntu-latest
+    if: >-
+      vars.SC_AUTOMATION_CLIENT_ID != '' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      startsWith(github.event.workflow_run.head_branch, 'release-please--') &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    steps:
+      - id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.SC_AUTOMATION_CLIENT_ID }}
+          private-key: ${{ secrets.SC_AUTOMATION_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - id: classify
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          APP_LOGIN: app/${{ steps.app-token.outputs.app-slug }}
+          APP_BOT: ${{ steps.app-token.outputs.app-slug }}[bot]
+        run: |
+          set -euo pipefail
+          PR=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$HEAD_BRANCH" --state open \
+            --json number,headRefOid,author \
+            --jq "first(.[] | select(.headRefOid == \"$HEAD_SHA\"))")
+          if [ -z "$PR" ]; then echo "decision=none" >> "$GITHUB_OUTPUT"; exit 0; fi
+          NUMBER=$(echo "$PR" | jq -r '.number')
+          # Only release PRs opened by the automation App, never a lookalike
+          # branch, and only when the App also made the head commit (nobody
+          # pushed onto its branch).
+          if [ "$(echo "$PR" | jq -r '.author.login')" != "$APP_LOGIN" ]; then
+            echo "PR #$NUMBER is not by $APP_LOGIN; ignoring."
+            echo "decision=none" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # author/committer logins come from commit emails, so also require the
+          # signature GitHub adds to commits the App makes through the API.
+          HEAD=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA" \n            --jq '[.author.login // "", .committer.login // "", (.commit.verification.verified | tostring)] | join(" ")')
+          if [ "$HEAD" != "$APP_BOT $APP_BOT true" ] && [ "$HEAD" != "$APP_BOT web-flow true" ]; then
+            echo "decision=manual: head commit not made by the release App" >> "$GITHUB_OUTPUT"
+            echo "number=$NUMBER" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          TAG=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || true)
+          if [ -z "$TAG" ]; then
+            DECISION="manual: first release"
+          else
+            DECISION=$(node scripts/release-classify.mjs "$TAG")
+          fi
+          echo "Release PR #$NUMBER: $DECISION"
+          { echo "number=$NUMBER"; echo "decision=$DECISION"; } >> "$GITHUB_OUTPUT"
+      - if: steps.classify.outputs.decision == 'auto'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          NUMBER: ${{ steps.classify.outputs.number }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: gh pr merge "$NUMBER" --repo "$GITHUB_REPOSITORY" --squash --match-head-commit "$HEAD_SHA"
+      - if: startsWith(steps.classify.outputs.decision, 'manual')
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          NUMBER: ${{ steps.classify.outputs.number }}
+          DECISION: ${{ steps.classify.outputs.decision }}
+        run: |
+          MARKER="<!-- auto-merge:release-manual -->"
+          if ! gh pr view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments[].body' | grep -qF "$MARKER"; then
+            gh pr comment "$NUMBER" --repo "$GITHUB_REPOSITORY" \
+              --body "$MARKER Not auto-merged (${DECISION#manual: }). Merging this PR is the release decision."
+          fi

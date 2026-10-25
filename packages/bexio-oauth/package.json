@@ -1,0 +1,60 @@
+{
+  "name": "@soulcode/bexio-oauth",
+  "version": "0.0.0",
+  "description": "Bexio OAuth token custody for Node apps: connect Bexio accounts, store tokens encrypted in Postgres, get a valid access token anywhere.",
+  "keywords": [
+    "bexio",
+    "oauth",
+    "oidc",
+    "openid-connect",
+    "postgres",
+    "token"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SoulcodeAgency/bexio-oauth.git",
+    "directory": "packages/bexio-oauth"
+  },
+  "homepage": "https://github.com/SoulcodeAgency/bexio-oauth/blob/main/docs/integration.md",
+  "bugs": "https://github.com/SoulcodeAgency/bexio-oauth/issues",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "bexio-oauth": "./dist/bin.js"
+  },
+  "files": [
+    "dist",
+    "sql"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "jose": "^6.2.13",
+    "openid-client": "^6.8.8"
+  },
+  "devDependencies": {
+    "@types/pg": "8.23.1",
+    "mock-bexio": "*",
+    "pg": "8.23.1",
+    "vitest": "5.0.5"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

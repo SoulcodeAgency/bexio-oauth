@@ -1,0 +1,43 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: Europe/Zurich
+    open-pull-requests-limit: 10
+    # Raise ranges in package.json, so a runtime-dep fix also raises the
+    # minimum version our users get.
+    versioning-strategy: increase
+    # Production deps → fix(deps), dev deps → chore(deps). Whether a release
+    # happens is decided by path: only changes under packages/bexio-oauth
+    # (i.e. the published package's own deps) cut a release.
+    commit-message:
+      prefix: fix
+      prefix-development: chore
+      include: scope
+    groups:
+      production-dependencies:
+        dependency-type: production
+        update-types: [minor, patch]
+      development-dependencies:
+        dependency-type: development
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: Europe/Zurich
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      # Minor and patch only: majors arrive as separate PRs and need a human.
+      github-actions:
+        patterns: ["*"]
+        update-types: [minor, patch]
