@@ -98,8 +98,9 @@ export async function refreshLocked(
       error.error === "invalid_grant"
     ) {
       // A reconnect during the refresh restarts the chain at Bexio, which
-      // rejects this (older) refresh token. The reconnect also cleared our
-      // lock, so nothing is marked and the caller reads the new tokens.
+      // rejects this (older) refresh token. If the reconnect's write already
+      // landed, it cleared our lock: nothing is marked and the caller reads
+      // the new tokens. If it lands later, it revives the connection then.
       if (!(await store.markReauthRequired(connection.id, lockToken, clock())))
         return null;
       throw new BexioOAuthError(

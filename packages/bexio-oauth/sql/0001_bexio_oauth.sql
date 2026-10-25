@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS bexio_connections (
   scope                 text,
   refresh_locked_until  timestamptz,
   refresh_lock_token    text,
+  authorized_at         timestamptz NOT NULL,
   last_refreshed_at     timestamptz NOT NULL DEFAULT now(),
   created_at            timestamptz NOT NULL DEFAULT now(),
   updated_at            timestamptz NOT NULL DEFAULT now(),

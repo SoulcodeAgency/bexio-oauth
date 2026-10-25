@@ -16,7 +16,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CONNECTION_COLUMNS = `id, bexio_company_id, bexio_user_id, bexio_company_user_id,
   company_name, user_name, user_email, role, status, access_token, refresh_token,
   access_expires_at, refresh_expires_at, scope, refresh_locked_until,
-  last_refreshed_at, created_at, updated_at`;
+  authorized_at, last_refreshed_at, created_at, updated_at`;
 
 /** Connection columns qualified with `c.`, for joins. */
 const C_COLUMNS = CONNECTION_COLUMNS.split(",")
@@ -25,6 +25,36 @@ const C_COLUMNS = CONNECTION_COLUMNS.split(",")
 
 /** A grant joined with its connection (`c`) and the grant (`g`). */
 const GRANT_COLUMNS = `g.id AS grant_id, g.owner_id, g.created_at AS grant_created_at, ${C_COLUMNS}`;
+
+/**
+ * The connection's columns an upsert sets, and the value each takes. They
+ * change only for an authorization at least as new as the stored one: Bexio
+ * has invalidated the older chain, so a slow connect that authorized earlier
+ * must not overwrite a later one. The grant is linked either way.
+ */
+const UPSERT_VALUES: [column: string, value: string][] = [
+  ["bexio_company_user_id", "EXCLUDED.bexio_company_user_id"],
+  ["company_name", "EXCLUDED.company_name"],
+  ["user_name", "EXCLUDED.user_name"],
+  ["user_email", "EXCLUDED.user_email"],
+  ["role", "EXCLUDED.role"],
+  ["status", "'active'"],
+  ["access_token", "EXCLUDED.access_token"],
+  ["refresh_token", "EXCLUDED.refresh_token"],
+  ["access_expires_at", "EXCLUDED.access_expires_at"],
+  ["refresh_expires_at", "EXCLUDED.refresh_expires_at"],
+  ["scope", "EXCLUDED.scope"],
+  ["refresh_locked_until", "NULL"],
+  ["refresh_lock_token", "NULL"],
+  ["authorized_at", "EXCLUDED.authorized_at"],
+  ["last_refreshed_at", "EXCLUDED.last_refreshed_at"],
+  ["updated_at", "EXCLUDED.updated_at"],
+];
+const NEWER_AUTHORIZATION_WINS = UPSERT_VALUES.map(
+  ([column, value]) =>
+    `${column} = CASE WHEN EXCLUDED.authorized_at >= bexio_connections.authorized_at
+       THEN ${value} ELSE bexio_connections.${column} END`,
+).join(",\n             ");
 
 /** SQLSTATE for a foreign key violation. */
 const FOREIGN_KEY_VIOLATION = "23503";
@@ -45,6 +75,7 @@ interface ConnectionRow {
   refresh_expires_at: Date | string | null;
   scope: string | null;
   refresh_locked_until: Date | string | null;
+  authorized_at: Date | string;
   last_refreshed_at: Date | string;
   created_at: Date | string;
   updated_at: Date | string;
@@ -84,6 +115,7 @@ function toConnection(row: ConnectionRow): ConnectionRecord {
     refreshExpiresAt: date(row.refresh_expires_at),
     scope: row.scope,
     refreshLockedUntil: date(row.refresh_locked_until),
+    authorizedAt: date(row.authorized_at),
     lastRefreshedAt: date(row.last_refreshed_at),
     createdAt: date(row.created_at),
     updatedAt: date(row.updated_at),
@@ -117,24 +149,11 @@ export function postgresStore(sql: SqlClient): GrantStore {
            INSERT INTO bexio_connections (bexio_company_id, bexio_user_id,
              bexio_company_user_id, company_name, user_name, user_email, role, status,
              access_token, refresh_token, access_expires_at, refresh_expires_at, scope,
-             refresh_locked_until, refresh_lock_token, last_refreshed_at, created_at, updated_at)
-           VALUES ($2, $3, $4, $5, $6, $7, $8, 'active', $9, $10, $11, $12, $13, NULL, NULL, $14, $14, $14)
+             refresh_locked_until, refresh_lock_token, authorized_at, last_refreshed_at,
+             created_at, updated_at)
+           VALUES ($2, $3, $4, $5, $6, $7, $8, 'active', $9, $10, $11, $12, $13, NULL, NULL, $15, $14, $14, $14)
            ON CONFLICT (bexio_company_id, bexio_user_id) DO UPDATE SET
-             bexio_company_user_id = EXCLUDED.bexio_company_user_id,
-             company_name = EXCLUDED.company_name,
-             user_name = EXCLUDED.user_name,
-             user_email = EXCLUDED.user_email,
-             role = EXCLUDED.role,
-             status = 'active',
-             access_token = EXCLUDED.access_token,
-             refresh_token = EXCLUDED.refresh_token,
-             access_expires_at = EXCLUDED.access_expires_at,
-             refresh_expires_at = EXCLUDED.refresh_expires_at,
-             scope = EXCLUDED.scope,
-             refresh_locked_until = NULL,
-             refresh_lock_token = NULL,
-             last_refreshed_at = EXCLUDED.last_refreshed_at,
-             updated_at = EXCLUDED.updated_at
+             ${NEWER_AUTHORIZATION_WINS}
            RETURNING ${CONNECTION_COLUMNS}
          ), g AS (
            INSERT INTO bexio_grants (owner_id, connection_id, created_at)
@@ -158,6 +177,7 @@ export function postgresStore(sql: SqlClient): GrantStore {
           g.refreshExpiresAt,
           g.scope,
           g.now,
+          g.authorizedAt,
         ],
       );
       if (!rows[0]) {
@@ -200,14 +220,26 @@ export function postgresStore(sql: SqlClient): GrantStore {
     // a concurrent upsertGrant commits meanwhile. The foreign key catches
     // that case: it checks against committed data and fails the delete.
     async deleteUnusedConnection(id) {
+      if (!UUID.test(id)) return null;
       try {
-        return await connection(
+        const { rows } = await sql.query(
           `DELETE FROM bexio_connections c
            WHERE c.id = $1
              AND NOT EXISTS (SELECT 1 FROM bexio_grants g WHERE g.connection_id = c.id)
-           RETURNING ${CONNECTION_COLUMNS}`,
+           RETURNING ${C_COLUMNS}, EXISTS (
+             SELECT 1 FROM bexio_connections o
+             WHERE o.bexio_user_id = c.bexio_user_id AND o.id <> c.id
+           ) AS user_has_other_connections`,
           [id],
         );
+        const row = rows[0] as
+          (ConnectionRow & { user_has_other_connections: boolean }) | undefined;
+        return row
+          ? {
+              connection: toConnection(row),
+              userHasOtherConnections: row.user_has_other_connections,
+            }
+          : null;
       } catch (error) {
         if ((error as { code?: unknown }).code === FOREIGN_KEY_VIOLATION)
           return null;

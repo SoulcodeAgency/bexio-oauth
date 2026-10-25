@@ -439,22 +439,112 @@ describe.each(backends)("$name store", ({ make }) => {
       const b = await connect(bexio, mock, "ws-b", { sub: GRACE });
       expect(b.grant.connectionId).not.toBe(a.grant.connectionId);
 
-      mock.revokeSessions(ADA);
-      clock.advance(10 * 60_000);
-      await expect(
-        bexio.getAccessToken({ ownerId: "ws-a" }),
-      ).rejects.toMatchObject({ code: "reauth_required" });
-      await expect(
-        bexio.getAccessToken({ ownerId: "ws-b" }),
-      ).resolves.toMatchObject({ grant: { userId: GRACE, status: "active" } });
-
       const revocations = mock.stats.revocations;
       await bexio.disconnect({ ownerId: "ws-a" });
       expect(mock.stats.revocations).toBe(revocations + 1);
       clock.advance(10 * 60_000);
       await expect(
         bexio.getAccessToken({ ownerId: "ws-b" }),
-      ).resolves.toMatchObject({ grant: { userId: GRACE } });
+      ).resolves.toMatchObject({ grant: { userId: GRACE, status: "active" } });
+    });
+
+    it("a slower connect that authorized earlier doesn't overwrite a newer one", async () => {
+      const clock = testClock();
+      // Hold A's connect after its code exchange, in the permissions call,
+      // while B authorizes later and finishes first.
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      let reached!: () => void;
+      const holding = new Promise<void>((resolve) => (reached = resolve));
+      let hold = true;
+      const slow: typeof fetch = async (input, init) => {
+        const url = String(input instanceof Request ? input.url : input);
+        if (hold && url.includes("/3.0/permissions")) {
+          hold = false;
+          reached();
+          await held;
+        }
+        return fetch(input, init);
+      };
+      const a = client(mock, store, { clock: clock.now, fetch: slow });
+      const b = client(mock, store, { clock: clock.now });
+      const { request } = await authorize(a, mock, "ws-a", ada);
+      const connectingA = a.handleCallback(request, { ownerId: "ws-a" });
+      await holding;
+      // Token issue times have one-second resolution.
+      await new Promise((r) => setTimeout(r, 1_100));
+      await connect(b, mock, "ws-b", ada);
+      release();
+      await connectingA;
+
+      clock.advance(10 * 60_000);
+      const rejected = mock.stats.rejectedRefreshes;
+      for (const ownerId of ["ws-a", "ws-b"]) {
+        await expect(b.getAccessToken({ ownerId })).resolves.toMatchObject({
+          grant: { ownerId, status: "active" },
+        });
+      }
+      expect(mock.stats.rejectedRefreshes).toBe(rejected);
+    });
+
+    it("disconnect doesn't revoke a reauth_required connection", async () => {
+      const clock = testClock();
+      const bexio = client(mock, store, { clock: clock.now });
+      await connect(bexio, mock, "ws-a", ada);
+      mock.revokeSessions(ADA);
+      clock.advance(10 * 60_000);
+      await expect(
+        bexio.getAccessToken({ ownerId: "ws-a" }),
+      ).rejects.toMatchObject({ code: "reauth_required" });
+      const revocations = mock.stats.revocations;
+      await bexio.disconnect({ ownerId: "ws-a" });
+      expect(mock.stats.revocations).toBe(revocations);
+      expect(await bexio.listGrants({ ownerId: "ws-a" })).toEqual([]);
+    });
+
+    it("disconnect doesn't revoke while the same Bexio user has a connection for another company", async () => {
+      const bexio = client(mock, store);
+      await connect(bexio, mock, "ws-a", ada);
+      const beta = await connect(bexio, mock, "ws-b", {
+        sub: ADA,
+        companyId: "cmp-beta",
+      });
+      const revocations = mock.stats.revocations;
+      await bexio.disconnect({ ownerId: "ws-b" });
+      expect(mock.stats.revocations).toBe(revocations);
+      expect(await store.getConnection(beta.grant.connectionId)).toBeNull();
+    });
+
+    it("known limit: a connect that authorizes while the last owner's disconnect revokes can lose its chain", async () => {
+      // The store sees no grant left and deletes the connection; before the
+      // revocation reaches Bexio, another owner authorizes the same identity.
+      // Bexio may end that new chain with the revocation (the mock does),
+      // which the database can't see. The owner sees reauth_required at its
+      // next refresh and reconnects (docs §10).
+      const clock = testClock();
+      const base = client(mock, store, { clock: clock.now });
+      let connected = false;
+      const racing: typeof fetch = async (input, init) => {
+        const url = String(input instanceof Request ? input.url : input);
+        if (url.endsWith("/revoke") && !connected) {
+          connected = true;
+          await connect(base, mock, "ws-b", ada);
+        }
+        return fetch(input, init);
+      };
+      await connect(base, mock, "ws-a", ada);
+      await client(mock, store, { clock: clock.now, fetch: racing }).disconnect(
+        { ownerId: "ws-a" },
+      );
+      expect(connected).toBe(true);
+      clock.advance(10 * 60_000);
+      await expect(
+        base.getAccessToken({ ownerId: "ws-b" }),
+      ).rejects.toMatchObject({ code: "reauth_required" });
+      await connect(base, mock, "ws-b", ada);
+      await expect(
+        base.getAccessToken({ ownerId: "ws-b" }),
+      ).resolves.toBeTruthy();
     });
   });
 

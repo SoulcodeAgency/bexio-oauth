@@ -13,7 +13,10 @@
  *   starts a new session, and refresh tokens issued before it fail with
  *   `invalid_grant` ("Refresh token issued before the user session started").
  *   The mock serves a single client, so the chain is per user;
- * - token revocation, which ends the revoked token's chain, userinfo, `GET /3.0/permissions`, `GET /2.0/company_profile`.
+ * - token revocation, modeled pessimistically (unverified against Bexio):
+ *   revoking any of a user's refresh tokens, even one from an older
+ *   authorization, ends the user's current chain too;
+ * - userinfo, `GET /3.0/permissions`, `GET /2.0/company_profile`.
  *
  * Kept to a single file without relative imports so it runs directly with
  * Node's type stripping and type-checks from any importing project.
@@ -549,7 +552,11 @@ export async function startMockBexio(
       if (!clientAuthenticated(req, form))
         return oauthError(res, 401, "invalid_client");
       const entry = refreshTokens.get(form.get("token") ?? "");
-      if (entry) revokeSession(entry.session);
+      if (entry) {
+        revokeSession(entry.session);
+        const current = currentSessions.get(entry.session.sub);
+        if (current) revokeSession(current);
+      }
       stats.revocations++;
       return send(res, 200, undefined);
     }

@@ -26,6 +26,17 @@ const form = (body: Record<string, string>) =>
 const refresh = (refreshToken: string) =>
   form({ grant_type: "refresh_token", refresh_token: refreshToken });
 
+const revoke = (refreshToken: string) =>
+  fetch(`${mock.issuer}/protocol/openid-connect/revoke`, {
+    method: "POST",
+    body: new URLSearchParams({
+      client_id: mock.clientId,
+      client_secret: mock.clientSecret,
+      token: refreshToken,
+      token_type_hint: "refresh_token",
+    }),
+  });
+
 /** A full authorization code flow (PKCE) for `login`, as a client would run it. */
 async function authorize(login: { sub?: string; companyId?: string }) {
   const redirectUri = "http://app.test/callback";
@@ -154,6 +165,13 @@ describe("mock-bexio", () => {
       error: "invalid_grant",
       error_description: "Session not active",
     });
+  });
+
+  it("revoking a token from an older authorization ends the user's current chain too", async () => {
+    const stale = await authorize({ companyId: "cmp-alpha" });
+    const current = await authorize({ companyId: "cmp-alpha" });
+    await revoke(stale.refresh_token);
+    expect((await refresh(current.refresh_token)).status).toBe(400);
   });
 
   it("rejects bad client credentials", async () => {

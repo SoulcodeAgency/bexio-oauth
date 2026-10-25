@@ -23,6 +23,7 @@ function upsert(overrides: Partial<GrantUpsert> = {}): GrantUpsert {
     accessExpiresAt: at(300_000),
     refreshExpiresAt: null,
     scope: "openid",
+    authorizedAt: t0,
     now: t0,
     ...overrides,
   };
@@ -132,6 +133,52 @@ export function storeContract(name: string, setup: () => Promise<GrantStore>) {
       expect(await statusOf("owner-2")).toBe("active");
     });
 
+    it("an older authorization only links its grant; an equal or newer one takes over the connection", async () => {
+      const a = await store.upsertGrant(upsert({ authorizedAt: at(10_000) }));
+      await store.acquireRefreshLock(expired(a.connection.id, "L"));
+      const older = await store.upsertGrant(
+        upsert({
+          ownerId: "owner-2",
+          accessToken: "enc-older",
+          authorizedAt: at(5_000),
+          now: at(20_000),
+        }),
+      );
+      // Linked, but the newer authorization's tokens and lock stay.
+      expect(older.connection.id).toBe(a.connection.id);
+      expect(await store.findGrants({ ownerId: "owner-2" })).toHaveLength(1);
+      expect(await store.getConnection(a.connection.id)).toMatchObject({
+        accessToken: "enc-access",
+        authorizedAt: at(10_000),
+        refreshLockedUntil: at(430_000),
+        updatedAt: t0,
+      });
+      for (const [ms, token] of [
+        [10_000, "enc-equal"],
+        [15_000, "enc-newer"],
+      ] as const) {
+        await store.upsertGrant(
+          upsert({ accessToken: token, authorizedAt: at(ms), now: at(ms) }),
+        );
+        expect(await store.getConnection(a.connection.id)).toMatchObject({
+          accessToken: token,
+          authorizedAt: at(ms),
+          refreshLockedUntil: null,
+        });
+      }
+    });
+
+    it("deleteUnusedConnection reports another connection of the same Bexio user", async () => {
+      const a = await store.upsertGrant(upsert());
+      await store.upsertGrant(
+        upsert({ ownerId: "owner-2", companyId: "cmp-2" }),
+      );
+      await store.deleteGrant(a.id);
+      expect(await store.deleteUnusedConnection(a.connection.id)).toMatchObject(
+        { userHasOtherConnections: true },
+      );
+    });
+
     it("finds by owner, company and grant id, oldest first, with the connection", async () => {
       const a = await store.upsertGrant(upsert());
       const b = await store.upsertGrant(
@@ -176,7 +223,10 @@ export function storeContract(name: string, setup: () => Promise<GrantStore>) {
 
       await store.deleteGrant(b.id);
       expect(await store.deleteUnusedConnection(a.connection.id)).toMatchObject(
-        { id: a.connection.id, refreshToken: "enc-refresh" },
+        {
+          connection: { id: a.connection.id, refreshToken: "enc-refresh" },
+          userHasOtherConnections: false,
+        },
       );
       expect(await store.getConnection(a.connection.id)).toBeNull();
       expect(await store.deleteUnusedConnection(a.connection.id)).toBeNull();

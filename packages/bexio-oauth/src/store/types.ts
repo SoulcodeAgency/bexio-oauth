@@ -23,6 +23,8 @@ export interface ConnectionRecord {
   refreshExpiresAt: Date | null;
   scope: string | null;
   refreshLockedUntil: Date | null;
+  /** When Bexio issued the authorization the tokens belong to. */
+  authorizedAt: Date;
   lastRefreshedAt: Date;
   createdAt: Date;
   updatedAt: Date;
@@ -37,8 +39,11 @@ export interface GrantRecord {
 }
 
 /**
- * Upsert of the connection for (company, user) with new tokens (status
- * `active`, lock cleared), and of the grant for (owner, that connection).
+ * Upsert of the connection for (company, user) and of the grant for (owner,
+ * that connection). The grant is always linked. The connection takes the new
+ * tokens (status `active`, lock cleared) unless it already holds a newer
+ * authorization: Bexio invalidates older chains, so a slow connect that
+ * authorized earlier must not overwrite a later one.
  */
 export interface GrantUpsert {
   ownerId: string;
@@ -54,6 +59,8 @@ export interface GrantUpsert {
   accessExpiresAt: Date | null;
   refreshExpiresAt: Date | null;
   scope: string | null;
+  /** When Bexio issued this authorization (the access token's `iat`). */
+  authorizedAt: Date;
   now: Date;
 }
 
@@ -106,10 +113,14 @@ export interface GrantStore {
   getConnection(id: string): Promise<ConnectionRecord | null>;
   /**
    * Deletes the connection if no grant references it any more, and returns
-   * the deleted row. Returns `null` (and changes nothing) while a grant still
-   * references it, including one added concurrently.
+   * the deleted row, plus whether the same Bexio user still has a connection
+   * (for another company). Returns `null` (and changes nothing) while a grant
+   * still references it, including one added concurrently.
    */
-  deleteUnusedConnection(id: string): Promise<ConnectionRecord | null>;
+  deleteUnusedConnection(id: string): Promise<{
+    connection: ConnectionRecord;
+    userHasOtherConnections: boolean;
+  } | null>;
   /**
    * Takes the refresh lock if the connection is active, not locked (or the
    * lock expired), and still matches the `accessExpiresBefore` /

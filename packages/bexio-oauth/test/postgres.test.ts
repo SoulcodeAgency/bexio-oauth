@@ -45,6 +45,7 @@ const upsert = (ownerId: string, now = new Date()): GrantUpsert => ({
   accessExpiresAt: now,
   refreshExpiresAt: null,
   scope: null,
+  authorizedAt: now,
   now,
 });
 
@@ -162,14 +163,16 @@ describe.skipIf(!hasDatabase)("postgres", () => {
       const deleting = store.deleteUnusedConnection(first.connection.id);
       // Wait until the delete blocks on the row lock. Its snapshot predates
       // owner-b's grant, so only the foreign key can stop it.
-      for (let i = 0; i < 100; i++) {
+      let blocked = false;
+      for (let i = 0; i < 100 && !blocked; i++) {
         const { rows } = await db.pool.query(
           `SELECT 1 FROM pg_stat_activity
            WHERE wait_event_type = 'Lock' AND query LIKE '%DELETE FROM bexio_connections%'`,
         );
-        if (rows.length > 0) break;
-        await new Promise((r) => setTimeout(r, 20));
+        blocked = rows.length > 0;
+        if (!blocked) await new Promise((r) => setTimeout(r, 20));
       }
+      expect(blocked).toBe(true);
       await tx.query("COMMIT");
       expect(await deleting).toBeNull();
     } finally {

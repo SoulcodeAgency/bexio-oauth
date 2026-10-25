@@ -238,6 +238,8 @@ What happens:
 
 **Connecting a second owner updates the first.** If another owner already connected the same Bexio user and company, the new tokens replace the shared connection's tokens: that is required, because Bexio has just invalidated the older refresh token ([§2](#why-owners-of-the-same-identity-share-a-connection)). Every owner of the connection uses the new tokens from then on, and a `reauth_required` connection becomes `active` again for all of them.
 
+When two owners connect the same identity at nearly the same time, the **newer authorization wins**, not the later database write: each connect makes a few more calls to Bexio after its code exchange, so the older authorization's save can arrive last. The connection stores when Bexio issued its tokens (the access token's `iat`) and only takes tokens at least as new. The other owner's grant is linked either way.
+
 **One callback for many owners.** If your callback URL can't tell which workspace the flow was for (the redirect URI is fixed), pass `authorizeOwner` instead of `ownerId`. It receives the owner recorded at `start` and returns whether the signed-in user may connect Bexio for it:
 
 ```ts
@@ -361,11 +363,13 @@ This deletes the owner's grant. It takes the same selectors as `getAccessToken` 
 
 **Only the last owner's disconnect revokes.** Revoking a refresh token at Bexio ends the one chain that every owner of the Bexio identity uses ([§2](#why-owners-of-the-same-identity-share-a-connection)). So the connection is deleted, and its refresh token revoked at Bexio (when Bexio's discovery document advertises a revocation endpoint), only when no grant references it any more. If revocation fails, the connection is deleted anyway.
 
-The order makes this safe against a concurrent connect of the same identity by another owner, with one statement per step:
+In the database, this order is safe against a concurrent connect of the same identity by another owner, with one statement per step:
 
 1. Delete the owner's grant.
 2. Delete the connection if no grant references it, returning the deleted row. The check runs on the statement's snapshot, which can miss a grant that a concurrent connect commits meanwhile, so the foreign key from `bexio_grants` to `bexio_connections` (`ON DELETE RESTRICT`) backs it up: Postgres checks it against committed data and refuses the delete. The store reads that refusal (SQLSTATE `23503`) as "still in use".
-3. Only if step 2 deleted the row: revoke its refresh token at Bexio.
+3. Only if step 2 deleted the row, the connection was `active`, and the same Bexio user has no other connection (another company): revoke its refresh token at Bexio. A `reauth_required` token is dead already, and the user's other connection may share the chain ([§15](#15-design-notes)); revoking in either case could only end a chain someone still uses.
+
+**What the database can't see:** Bexio's sessions. If another owner completes a Bexio login for the same identity after step 2 but before the revocation in step 3 reaches Bexio, that revocation may end the new chain too (Bexio keeps one per user and client). That owner's connection then turns `reauth_required` at its next refresh, and reconnecting fixes it. The window is the length of one revocation request.
 
 Two owners disconnecting the last two grants at the same time can't both miss each other: each runs step 2 after its own step 1 committed, so at least one of them sees no grant left. A process that dies between steps 1 and 2 leaves a connection without grants. Nothing refreshes it (`refreshIdle` skips it), Bexio ends its session after the idle timeout, and the next connect of that identity reuses the row.
 
@@ -379,7 +383,7 @@ Bexio rotates refresh tokens and rejects a refresh token that has already been u
 2. The winner refreshes, stores the new tokens once for every owner, and clears the lock.
 3. The others (for the same owner or for another owner of the connection) wait briefly, re-read the row, and use the winner's new token.
 4. If the winner crashes, the lock expires after `refreshLockTtl` and the next caller takes over.
-5. Every write by the lock holder carries a random lock token and only applies while that token still holds the lock. A holder whose lock expired, or whose connection was reconnected meanwhile, changes nothing; it re-reads the row and uses the newer tokens if they are valid. This includes `invalid_grant`: a reconnect during a refresh restarts the chain at Bexio, which then rejects the refresh in flight, and the holder must not mark the freshly reconnected connection `reauth_required`.
+5. Every write by the lock holder carries a random lock token and only applies while that token still holds the lock. A holder whose lock expired, or whose connection was reconnected meanwhile, changes nothing; it re-reads the row and uses the newer tokens if they are valid. A reconnect during a refresh also restarts the chain at Bexio, which then rejects the refresh in flight with `invalid_grant`. If the reconnect's write landed first, it cleared the lock, nothing is marked, and the caller gets the new tokens. If it lands after the holder marked the connection, that caller gets one `reauth_required`, and the reconnect makes the connection `active` again for everyone.
 
 Every HTTP request to Bexio has a 10-second timeout (the permissions call 5 seconds). A refresh makes at most three of them (token, signing keys, permissions), so it fits in the 30-second lock; discovery runs before the lock is taken. `refreshLockTtl` below 30 seconds is refused (`invalid_config`).
 
@@ -432,6 +436,7 @@ Simplified; the SQL files are authoritative.
 | `access_expires_at`, `refresh_expires_at`       | `timestamptz`         |                                                                                                        |
 | `scope`                                         | `text`                | Scopes actually granted.                                                                               |
 | `refresh_locked_until`, `refresh_lock_token`    | `timestamptz`, `text` | Refresh lock and its holder (§10).                                                                     |
+| `authorized_at`                                 | `timestamptz`         | When Bexio issued the authorization the tokens belong to; a connect only replaces older ones (§6).     |
 | `last_refreshed_at`, `created_at`, `updated_at` | `timestamptz`         | `last_refreshed_at` drives `refreshIdle`, so `getAccessToken` stays read-only when the token is valid. |
 
 Unique: `(bexio_company_id, bexio_user_id)`. Partial index on `last_refreshed_at` for active connections (`refreshIdle`).

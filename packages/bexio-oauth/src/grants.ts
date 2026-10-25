@@ -137,6 +137,7 @@ export async function saveTokens(
   const role =
     (await fetchRole(ctx.fetchImpl, ctx.apiBaseUrl, input.accessToken)) ??
     "member";
+  const issuedAt = decodeIfJwt(input.accessToken).iat;
   return ctx.store.upsertGrant({
     ownerId: input.ownerId,
     ...identity,
@@ -148,6 +149,8 @@ export async function saveTokens(
     accessExpiresAt: input.accessExpiresAt,
     refreshExpiresAt: input.refreshExpiresAt,
     scope: input.scope,
+    authorizedAt:
+      typeof issuedAt === "number" ? new Date(issuedAt * 1000) : ctx.clock(),
     now: ctx.clock(),
   });
 }
@@ -172,10 +175,19 @@ export async function disconnect(
   // all owners of this identity share, so it may only happen once the store
   // has confirmed that no grant (not even a concurrent one) uses it.
   await ctx.store.deleteGrant(grant.id);
-  const connection = await ctx.store.deleteUnusedConnection(
-    grant.connection.id,
-  );
-  if (!connection?.refreshToken) return;
+  const deleted = await ctx.store.deleteUnusedConnection(grant.connection.id);
+  if (!deleted) return;
+  const { connection, userHasOtherConnections } = deleted;
+  // Revoking may end the user's current chain at Bexio, whichever token it
+  // names. A reauth_required connection's token is dead already, and another
+  // connection of the same Bexio user (another company) may share the chain:
+  // revoking in either case could only log out someone still using it.
+  if (
+    !connection.refreshToken ||
+    connection.status !== "active" ||
+    userHasOtherConnections
+  )
+    return;
   try {
     const c = await ctx.oidc.config();
     if (c.serverMetadata().revocation_endpoint) {

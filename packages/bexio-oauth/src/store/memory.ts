@@ -44,17 +44,24 @@ export function memoryStore(): GrantStore {
       const existing = [...connections.values()].find(
         (c) => c.companyId === input.companyId && c.userId === input.userId,
       );
-      const connection: ConnectionRecord = {
-        id: existing?.id ?? randomUUID(),
-        ...fields,
-        status: "active",
-        refreshLockedUntil: null,
-        lastRefreshedAt: now,
-        createdAt: existing?.createdAt ?? now,
-        updatedAt: now,
-      };
-      connections.set(connection.id, connection);
-      lockTokens.delete(connection.id);
+      // An older authorization than the stored one only links the grant
+      // (see GrantUpsert).
+      const connection: ConnectionRecord =
+        existing && input.authorizedAt < existing.authorizedAt
+          ? existing
+          : {
+              id: existing?.id ?? randomUUID(),
+              ...fields,
+              status: "active",
+              refreshLockedUntil: null,
+              lastRefreshedAt: now,
+              createdAt: existing?.createdAt ?? now,
+              updatedAt: now,
+            };
+      if (connection !== existing) {
+        connections.set(connection.id, connection);
+        lockTokens.delete(connection.id);
+      }
       let grant = [...grants.values()].find(
         (g) => g.ownerId === ownerId && g.connectionId === connection.id,
       );
@@ -98,7 +105,12 @@ export function memoryStore(): GrantStore {
         return null;
       connections.delete(id);
       lockTokens.delete(id);
-      return copy(row);
+      return {
+        connection: copy(row),
+        userHasOtherConnections: [...connections.values()].some(
+          (c) => c.userId === row.userId,
+        ),
+      };
     },
 
     async acquireRefreshLock(req: LockRequest) {
