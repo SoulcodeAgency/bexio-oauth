@@ -6,7 +6,8 @@
   "packages": {
     "packages/bexio-oauth": {
       "package-name": "@soulcode/bexio-oauth",
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "initial-version": "0.1.0"
     }
   }
 }
