@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { decodeJwt } from "jose";
 import { startMockBexio, type MockBexio } from "./index.ts";
@@ -22,6 +23,36 @@ const form = (body: Record<string, string>) =>
       ...body,
     }),
   });
+const refresh = (refreshToken: string) =>
+  form({ grant_type: "refresh_token", refresh_token: refreshToken });
+
+/** A full authorization code flow (PKCE) for `login`, as a client would run it. */
+async function authorize(login: { sub?: string; companyId?: string }) {
+  const redirectUri = "http://app.test/callback";
+  const verifier = randomBytes(32).toString("base64url");
+  mock.nextLogin(login);
+  const auth = new URL(`${mock.issuer}/protocol/openid-connect/auth`);
+  auth.search = new URLSearchParams({
+    client_id: mock.clientId,
+    redirect_uri: redirectUri,
+    response_type: "code",
+    scope: "openid offline_access",
+    code_challenge: createHash("sha256").update(verifier).digest("base64url"),
+    code_challenge_method: "S256",
+  }).toString();
+  const redirect = await fetch(auth, { redirect: "manual" });
+  const code = new URL(redirect.headers.get("location")!).searchParams.get(
+    "code",
+  )!;
+  return json<{ refresh_token: string }>(
+    form({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: redirectUri,
+      code_verifier: verifier,
+    }),
+  );
+}
 
 describe("mock-bexio", () => {
   it("serves discovery and keys", async () => {
@@ -69,6 +100,60 @@ describe("mock-bexio", () => {
       (await form({ grant_type: "refresh_token", refresh_token: rotated }))
         .status,
     ).toBe(400);
+  });
+
+  it("a new authorization ends the chain of every refresh token issued to that user before", async () => {
+    const ada = "8f1c2a8e-0001-4000-8000-000000000001";
+    const grace = "8f1c2a8e-0002-4000-8000-000000000002";
+    const first = await authorize({ sub: ada, companyId: "cmp-alpha" });
+    const rotated = await json<{ refresh_token: string }>(
+      refresh(first.refresh_token),
+    );
+    const graceTokens = await authorize({ sub: grace });
+    const second = await authorize({ sub: ada, companyId: "cmp-alpha" });
+
+    const stale = await refresh(rotated.refresh_token);
+    expect(stale.status).toBe(400);
+    expect(await stale.json()).toEqual({
+      error: "invalid_grant",
+      error_description: "Refresh token issued before the user session started",
+    });
+    // The latest authorization works, and other users keep their chains.
+    expect((await refresh(second.refresh_token)).status).toBe(200);
+    expect((await refresh(graceTokens.refresh_token)).status).toBe(200);
+  });
+
+  it("tokens handed out directly count as a new authorization", async () => {
+    const before = await authorize({ companyId: "cmp-beta" });
+    const direct = await mock.issueTokens({ companyId: "cmp-beta" });
+    expect((await refresh(before.refresh_token)).status).toBe(400);
+    expect((await refresh(direct.refresh_token)).status).toBe(200);
+  });
+
+  it("revoking a refresh token ends its chain", async () => {
+    const tokens = await authorize({ companyId: "cmp-beta" });
+    const rotated = await json<{ refresh_token: string }>(
+      refresh(tokens.refresh_token),
+    );
+    const revoke = await fetch(
+      `${mock.issuer}/protocol/openid-connect/revoke`,
+      {
+        method: "POST",
+        body: new URLSearchParams({
+          client_id: mock.clientId,
+          client_secret: mock.clientSecret,
+          token: rotated.refresh_token,
+          token_type_hint: "refresh_token",
+        }),
+      },
+    );
+    expect(revoke.status).toBe(200);
+    const after = await refresh(rotated.refresh_token);
+    expect(after.status).toBe(400);
+    expect(await after.json()).toMatchObject({
+      error: "invalid_grant",
+      error_description: "Session not active",
+    });
   });
 
   it("rejects bad client credentials", async () => {

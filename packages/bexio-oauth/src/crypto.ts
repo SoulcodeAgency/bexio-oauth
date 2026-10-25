@@ -32,8 +32,8 @@ function hash(value: string): string {
 
 /**
  * Encrypts tokens at rest as compact JWE (`dir` + `A256GCM`) and seals the
- * short-lived flow cookie. The `bxg` protected header binds a token to the
- * grant it belongs to, so ciphertext copied to another row fails to decrypt.
+ * short-lived flow cookie. The `bxc` protected header binds a token to the
+ * connection it belongs to, so ciphertext copied to another row fails to decrypt.
  */
 export class TokenCipher {
   readonly #current: string;
@@ -75,7 +75,7 @@ export class TokenCipher {
         alg: "dir",
         enc: "A256GCM",
         kid: this.#current,
-        bxg: hash(binding),
+        bxc: hash(binding),
       })
       .encrypt(this.#key(this.#current).key);
   }
@@ -87,14 +87,14 @@ export class TokenCipher {
         (header: CompactJWEHeaderParameters) => this.#key(header.kid).key,
         JWE_ALGORITHMS,
       );
-      if (protectedHeader.bxg !== hash(binding)) {
+      if (protectedHeader.bxc !== hash(binding)) {
         throw new Error("binding mismatch");
       }
       return new TextDecoder().decode(plaintext);
     } catch {
       throw new BexioOAuthError(
         "decryption_failed",
-        "stored token could not be decrypted (unknown key id, or it belongs to another grant)",
+        "stored token could not be decrypted (unknown key id, or it belongs to another connection)",
       );
     }
   }

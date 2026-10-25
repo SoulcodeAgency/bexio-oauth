@@ -35,7 +35,7 @@ npm run check          # format, lint, typecheck, unit + integration tests
 npm run test:e2e       # example apps against mock-bexio (starts Postgres / Supabase locally)
 ```
 
-Integration and e2e tests never call the real Bexio. They use `examples/_shared/mock-bexio`. To try against real Bexio, run an example app with your own Bexio OAuth app credentials (see each example's `.env.example`).
+Integration and e2e tests never call the real Bexio. They use `examples/_shared/mock-bexio`, which models the Keycloak behavior the library depends on: rotating refresh tokens with reuse detection, and **one token chain per user**. Every new authorization of a user (code exchange, or `issueTokens` for tests that stand in for an auth framework) starts a new session, and refresh tokens issued before it fail with `invalid_grant` ("Refresh token issued before the user session started"), as Bexio does. Revoking a refresh token ends its chain. The mock serves one OAuth client, so its chain is per user; tests that need independent chains use different users (`ADA`, `GRACE`, `KATHERINE`). Like Bexio, its tokens carry `given_name` and `family_name` but no `name`. To try against real Bexio, run an example app with your own Bexio OAuth app credentials (see each example's `.env.example`).
 
 ## 3. Tests
 

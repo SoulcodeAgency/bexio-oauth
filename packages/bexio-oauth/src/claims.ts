@@ -73,11 +73,7 @@ export function mapClaims(claims: ClaimBag): BexioIdentity {
   };
 }
 
-/** The value a grant's ciphertext is bound to (see `TokenCipher`). */
-export function grantBinding(
-  ownerId: string,
-  companyId: string,
-  userId: string,
-): string {
-  return `${ownerId}\u0000${companyId}\u0000${userId}`;
+/** The value a connection's ciphertext is bound to (see `TokenCipher`). */
+export function connectionBinding(companyId: string, userId: string): string {
+  return `${companyId}\u0000${userId}`;
 }

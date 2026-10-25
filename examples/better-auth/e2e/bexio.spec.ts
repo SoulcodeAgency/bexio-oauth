@@ -28,6 +28,11 @@ async function signIn(page: Page, sub = ADA, companyId = "cmp-alpha") {
   await expect(page.getByRole("heading", { level: 1 })).toContainText("Hello");
 }
 
+async function mockStats(): Promise<{ revocations: number }> {
+  const res = await fetch(`${e2eEnv.MOCK_URL}/__mock/stats`);
+  return (await res.json()) as { revocations: number };
+}
+
 async function connectWorkspace(
   page: Page,
   slug: string,
@@ -45,7 +50,7 @@ test.describe.configure({ mode: "serial" });
 
 test.beforeEach(async () => {
   await db.query(
-    'TRUNCATE bexio_grants, "session", "account", "verification", "user" CASCADE',
+    'TRUNCATE bexio_grants, bexio_connections, "session", "account", "verification", "user" CASCADE',
   );
 });
 
@@ -74,14 +79,14 @@ test("sign in with Bexio: the grant is saved, Better Auth keeps no tokens, disco
   expect(accounts).toEqual([
     { accessToken: null, refreshToken: null, idToken: null },
   ]);
-  const { rows: grants } = await db.query<{
+  const { rows: connections } = await db.query<{
     access_token: string;
     refresh_token: string;
-  }>("SELECT access_token, refresh_token FROM bexio_grants");
-  expect(grants).toHaveLength(1);
+  }>("SELECT access_token, refresh_token FROM bexio_connections");
+  expect(connections).toHaveLength(1);
   // JWE compact serialization: five dot-separated parts, not a readable JWT.
-  expect(grants[0].access_token.split(".")).toHaveLength(5);
-  expect(grants[0].refresh_token.split(".")).toHaveLength(5);
+  expect(connections[0].access_token.split(".")).toHaveLength(5);
+  expect(connections[0].refresh_token.split(".")).toHaveLength(5);
 
   await own.getByTestId("disconnect").click();
   await expect(own).toHaveText("Not connected.");
@@ -111,7 +116,9 @@ test("connect Bexio for a workspace, use it from a background job, keep it alive
   const lastRefreshed = async () =>
     (
       await db.query<{ last_refreshed_at: Date }>(
-        "SELECT last_refreshed_at FROM bexio_grants WHERE owner_id = 'workspace:a'",
+        `SELECT c.last_refreshed_at FROM bexio_grants g
+         JOIN bexio_connections c ON c.id = g.connection_id
+         WHERE g.owner_id = 'workspace:a'`,
       )
     ).rows[0].last_refreshed_at;
   const before = await lastRefreshed();
@@ -129,11 +136,11 @@ test("signing in again replaces the tokens: still one grant, Better Auth's copy 
   await page.getByTestId("sign-out").click();
   await expect(page.getByTestId("sign-in")).toBeVisible();
   const { rows: first } = await db.query<Row>(
-    "SELECT id, access_token FROM bexio_grants",
+    "SELECT g.id, c.access_token FROM bexio_grants g JOIN bexio_connections c ON c.id = g.connection_id",
   );
   await signIn(page);
   const { rows: second } = await db.query<Row>(
-    "SELECT id, access_token FROM bexio_grants",
+    "SELECT g.id, c.access_token FROM bexio_grants g JOIN bexio_connections c ON c.id = g.connection_id",
   );
   expect(second).toHaveLength(1);
   expect(second[0].id).toBe(first[0].id);
@@ -146,17 +153,50 @@ test("signing in again replaces the tokens: still one grant, Better Auth's copy 
   ]);
 });
 
-test("two workspaces connect the same Bexio user and company; disconnecting one keeps the other", async ({
+test("two workspaces connect the same Bexio user and company; both keep working through refreshes and a disconnect", async ({
   page,
+  request,
 }) => {
-  await signIn(page);
+  // Sign in as another Bexio user, so only the workspaces share Ada's identity.
+  await signIn(page, GRACE);
   await connectWorkspace(page, "a", ADA, "cmp-beta");
   await connectWorkspace(page, "b", ADA, "cmp-beta");
+  const apiResult = (slug: string) =>
+    page.getByTestId(`workspace-${slug}`).getByTestId("api-result");
+
+  // Refresh every idle connection, workspace a's included. Its authorization
+  // is the older one: Bexio restarted the token chain when b connected.
+  const refreshIdle = async () => {
+    await page.waitForTimeout(1_500); // BEXIO_IDLE_FOR is 1s in e2e
+    const sweep = await request.get("/api/cron/refresh-idle", {
+      headers: cron,
+    });
+    return (await sweep.json()) as Record<string, number>;
+  };
+  // Counts connections: Grace's own, and the one both workspaces share.
+  expect(await refreshIdle()).toMatchObject({
+    refreshed: 2,
+    reauthRequired: 0,
+    failed: 0,
+  });
+  await page.reload();
+  await expect(apiResult("a")).toHaveText("API call OK: Beta GmbH");
+  await expect(apiResult("b")).toHaveText("API call OK: Beta GmbH");
+
+  // Disconnecting a revokes nothing at Bexio: b still uses the chain.
+  const { revocations } = await mockStats();
   await page.getByTestId("workspace-a").getByTestId("disconnect").click();
   await expect(page.getByTestId("workspace-a")).toContainText("Not connected.");
-  await expect(
-    page.getByTestId("workspace-b").getByTestId("api-result"),
-  ).toHaveText("API call OK: Beta GmbH");
+  expect((await mockStats()).revocations).toBe(revocations);
+
+  // Grace's own connection and the one b still uses.
+  expect(await refreshIdle()).toMatchObject({
+    refreshed: 2,
+    reauthRequired: 0,
+    failed: 0,
+  });
+  await page.reload();
+  await expect(apiResult("b")).toHaveText("API call OK: Beta GmbH");
 });
 
 test("a revoked Bexio session shows 'reconnect required', and reconnecting restores the grant", async ({

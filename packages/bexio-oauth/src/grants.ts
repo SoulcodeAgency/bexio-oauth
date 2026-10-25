@@ -1,56 +1,68 @@
 import * as oidc from "openid-client";
 import { decodeJwt } from "jose";
-import { grantBinding, mapClaims, type ClaimBag } from "./claims.js";
+import { connectionBinding, mapClaims, type ClaimBag } from "./claims.js";
 import type { ClientContext } from "./config.js";
 import type { TokenCipher } from "./crypto.js";
 import { BexioOAuthError } from "./errors.js";
 import { fetchRole } from "./permissions.js";
-import type { GrantRecord, GrantStore } from "./store/types.js";
+import type {
+  ConnectionRecord,
+  GrantRecord,
+  GrantStore,
+} from "./store/types.js";
 import type { AccessToken, Grant, GrantSelector } from "./types.js";
 
-/** The app-facing view of a stored grant: no token material. */
-export function toGrant(r: GrantRecord): Grant {
+/**
+ * The app-facing view of a stored grant, with `c` (default: the grant's own)
+ * as its connection: no token material.
+ */
+export function toGrant(
+  grant: GrantRecord,
+  c: ConnectionRecord = grant.connection,
+): Grant {
   return {
-    id: r.id,
-    ownerId: r.ownerId,
-    companyId: r.companyId,
-    companyName: r.companyName,
-    userId: r.userId,
-    userName: r.userName,
-    userEmail: r.userEmail,
-    companyUserId: r.companyUserId,
-    role: r.role,
-    status: r.status,
-    scope: r.scope,
-    accessExpiresAt: r.accessExpiresAt,
-    lastRefreshedAt: r.lastRefreshedAt,
-    createdAt: r.createdAt,
-    updatedAt: r.updatedAt,
+    id: grant.id,
+    ownerId: grant.ownerId,
+    connectionId: c.id,
+    companyId: c.companyId,
+    companyName: c.companyName,
+    userId: c.userId,
+    userName: c.userName,
+    userEmail: c.userEmail,
+    companyUserId: c.companyUserId,
+    role: c.role,
+    status: c.status,
+    scope: c.scope,
+    accessExpiresAt: c.accessExpiresAt,
+    lastRefreshedAt: c.lastRefreshedAt,
+    createdAt: grant.createdAt,
+    updatedAt: c.updatedAt,
   };
 }
 
-/** The binding a grant's ciphertexts are encrypted under. */
-export function bindingOf(record: GrantRecord): string {
-  return grantBinding(record.ownerId, record.companyId, record.userId);
+/** The binding a connection's ciphertexts are encrypted under. */
+export function bindingOf(connection: ConnectionRecord): string {
+  return connectionBinding(connection.companyId, connection.userId);
 }
 
 export function decryptFor(
   cipher: TokenCipher,
-  record: GrantRecord,
+  connection: ConnectionRecord,
   value: string,
 ): Promise<string> {
-  return cipher.decrypt(value, bindingOf(record));
+  return cipher.decrypt(value, bindingOf(connection));
 }
 
-/** Decrypts the grant's access token for the caller. */
+/** Decrypts the connection's access token for the owner of `grant`. */
 export async function issue(
   cipher: TokenCipher,
-  record: GrantRecord,
+  grant: GrantRecord,
+  connection: ConnectionRecord,
 ): Promise<AccessToken> {
   return {
-    accessToken: await decryptFor(cipher, record, record.accessToken),
-    expiresAt: record.accessExpiresAt,
-    grant: toGrant(record),
+    accessToken: await decryptFor(cipher, connection, connection.accessToken),
+    expiresAt: connection.accessExpiresAt,
+    grant: toGrant(grant, connection),
   };
 }
 
@@ -104,7 +116,10 @@ export async function withUserInfo(
   }
 }
 
-/** Encrypts the tokens, reads the role and upserts the grant for the identity in `claims`. */
+/**
+ * Encrypts the tokens, reads the role, and upserts the connection for the
+ * identity in `claims` and the owner's grant on it.
+ */
 export async function saveTokens(
   ctx: ClientContext,
   input: {
@@ -118,11 +133,7 @@ export async function saveTokens(
   },
 ): Promise<GrantRecord> {
   const identity = mapClaims(input.claims);
-  const binding = grantBinding(
-    input.ownerId,
-    identity.companyId,
-    identity.userId,
-  );
+  const binding = connectionBinding(identity.companyId, identity.userId);
   const role =
     (await fetchRole(ctx.fetchImpl, ctx.apiBaseUrl, input.accessToken)) ??
     "member";
@@ -147,25 +158,34 @@ export async function listGrants(
 ): Promise<Grant[]> {
   if (!query?.ownerId)
     throw new BexioOAuthError("invalid_config", "ownerId is required");
-  return (await store.findGrants({ ownerId: query.ownerId })).map(toGrant);
+  return (await store.findGrants({ ownerId: query.ownerId })).map((g) =>
+    toGrant(g),
+  );
 }
 
 export async function disconnect(
   ctx: ClientContext,
   selector: GrantSelector,
 ): Promise<void> {
-  const record = await resolveGrant(ctx.store, selector);
+  const grant = await resolveGrant(ctx.store, selector);
+  // Delete first, revoke after: revoking ends the one refresh token chain
+  // all owners of this identity share, so it may only happen once the store
+  // has confirmed that no grant (not even a concurrent one) uses it.
+  await ctx.store.deleteGrant(grant.id);
+  const connection = await ctx.store.deleteUnusedConnection(
+    grant.connection.id,
+  );
+  if (!connection?.refreshToken) return;
   try {
     const c = await ctx.oidc.config();
-    if (record.refreshToken && c.serverMetadata().revocation_endpoint) {
+    if (c.serverMetadata().revocation_endpoint) {
       await oidc.tokenRevocation(
         c,
-        await decryptFor(ctx.cipher, record, record.refreshToken),
+        await decryptFor(ctx.cipher, connection, connection.refreshToken),
         { token_type_hint: "refresh_token" },
       );
     }
   } catch {
-    // Revocation is best effort; the grant is deleted either way.
+    // Revocation is best effort; the connection is deleted either way.
   }
-  await ctx.store.deleteGrant(record.id);
 }

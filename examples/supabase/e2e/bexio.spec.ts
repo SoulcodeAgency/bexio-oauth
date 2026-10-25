@@ -9,7 +9,7 @@ test.afterAll(async () => {
   await db.end();
 });
 
-test("connect Bexio for a Supabase user; RLS keeps bexio_grants unreadable for clients", async ({
+test("connect Bexio for a Supabase user; RLS keeps the token tables unreadable for clients", async ({
   page,
 }) => {
   const email = `e2e-${Date.now()}@example.com`;
@@ -49,19 +49,20 @@ test("connect Bexio for a Supabase user; RLS keeps bexio_grants unreadable for c
   );
   expect(rows).toHaveLength(1);
 
-  // …but neither the anon nor the signed-in user's role can read it through the API.
-  // RLS without policies + REVOKE: PostgREST refuses outright (42501), no rows leak.
-  const asUser = await anon.from("bexio_grants").select("id, access_token");
-  expect(asUser.data).toBeNull();
-  expect(asUser.error?.code).toBe("42501");
-  const asAnon = await createClient(
+  // …but neither the anon nor the signed-in user's role can read the tables
+  // through the API. RLS without policies + REVOKE: PostgREST refuses
+  // outright (42501), no rows leak.
+  const signedOut = createClient(
     e2eEnv.NEXT_PUBLIC_SUPABASE_URL,
     e2eEnv.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-  )
-    .from("bexio_grants")
-    .select("id");
-  expect(asAnon.data).toBeNull();
-  expect(asAnon.error?.code).toBe("42501");
+  );
+  for (const table of ["bexio_connections", "bexio_grants"]) {
+    for (const api of [anon, signedOut]) {
+      const result = await api.from(table).select("id");
+      expect(result.data).toBeNull();
+      expect(result.error?.code).toBe("42501");
+    }
+  }
 
   await page.getByTestId("disconnect").click();
   await expect(page.getByTestId("grants")).toHaveText("Not connected.");

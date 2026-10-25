@@ -18,7 +18,7 @@ export interface BexioOAuthConfig {
   issuer?: string;
   /** Defaults to `https://api.bexio.com`. Override only to point at a mock. */
   apiBaseUrl?: string;
-  /** How long one refresh may hold a grant's lock. Default `"30s"`. */
+  /** How long one refresh may hold a connection's lock. Default `"30s"`. */
   refreshLockTtl?: Duration;
   /** Where `callback` redirects when the flow cookie is gone. Default `"/"`. */
   defaultReturnTo?: string;
@@ -28,10 +28,16 @@ export interface BexioOAuthConfig {
   clock?: () => Date;
 }
 
-/** A grant as the app sees it: no token material. */
+/**
+ * A grant as the app sees it: one owner's access to a connection, without
+ * token material. Grants of the same Bexio identity share one connection,
+ * so they share its tokens, role and status.
+ */
 export interface Grant {
   id: string;
   ownerId: string;
+  /** Shared by every grant of the same Bexio company and user. */
+  connectionId: string;
   companyId: string;
   companyName: string | null;
   userId: string;
@@ -43,7 +49,9 @@ export interface Grant {
   scope: string | null;
   accessExpiresAt: Date | null;
   lastRefreshedAt: Date;
+  /** When this owner connected. */
   createdAt: Date;
+  /** When the connection last changed. */
   updatedAt: Date;
 }
 
@@ -70,15 +78,17 @@ export interface ExternalTokens {
   scope?: string | null;
 }
 
+/** Counts connections, not grants: owners of one Bexio identity share one. */
 export interface RefreshIdleResult {
   refreshed: number;
-  /** Idle grants another process was refreshing at the same time. */
+  /** Idle connections another process was refreshing at the same time. */
   skipped: number;
   reauthRequired: number;
   failed: number;
   /**
-   * Idle grants not attempted because `timeBudget` ran out (0 when every idle
-   * grant of this run was attempted). The next run picks them up first.
+   * Idle connections not attempted because `timeBudget` ran out (0 when every
+   * idle connection of this run was attempted). The next run picks them up
+   * first.
    */
   remaining: number;
 }
@@ -141,14 +151,18 @@ export interface BexioOAuth {
   /** The owner's grants, without token material. */
   listGrants(query: { ownerId: string }): Promise<Grant[]>;
 
-  /** Revokes the refresh token at Bexio (best effort) and deletes the grant. */
+  /**
+   * Deletes the owner's grant. When it was the last grant of its connection,
+   * also deletes the connection and revokes its refresh token at Bexio (best
+   * effort). Other owners of the same Bexio identity keep working.
+   */
   disconnect(selector: GrantSelector): Promise<void>;
 
   /**
-   * Refreshes active grants not refreshed for `idleFor`, so Bexio doesn't end
-   * their offline sessions. Run it on a schedule. `limit` (default 100) caps
-   * the grants one run looks at; `timeBudget` stops the run before the next
-   * grant once that much time has passed.
+   * Refreshes active connections not refreshed for `idleFor`, so Bexio
+   * doesn't end their offline sessions. Run it on a schedule. `limit`
+   * (default 100) caps the connections one run looks at; `timeBudget` stops
+   * the run before the next connection once that much time has passed.
    */
   refreshIdle(options: {
     idleFor: Duration;

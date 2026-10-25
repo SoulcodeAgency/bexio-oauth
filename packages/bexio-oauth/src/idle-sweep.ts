@@ -6,7 +6,7 @@ import type { RefreshIdleResult } from "./types.js";
 
 export const DEFAULT_IDLE_LIMIT = 100;
 
-/** `BexioOAuth.refreshIdle`: refreshes idle grants one after another. */
+/** `BexioOAuth.refreshIdle`: refreshes idle connections one after another. */
 export async function refreshIdle(
   ctx: ClientContext,
   options: { idleFor: Duration; limit?: number; timeBudget?: Duration },
@@ -26,7 +26,7 @@ export async function refreshIdle(
     remaining: 0,
   };
   const refreshedBefore = new Date(startedAt - idleMs);
-  const idle = await store.listIdleGrants({
+  const idle = await store.listIdleConnections({
     refreshedBefore,
     limit: options.limit ?? DEFAULT_IDLE_LIMIT,
   });
@@ -38,9 +38,9 @@ export async function refreshIdle(
     result.failed = idle.length;
     return result;
   }
-  for (const [index, grant] of idle.entries()) {
+  for (const [index, connection] of idle.entries()) {
     // Stop before taking the next lock, so a function timeout can't cut a
-    // refresh in half. The oldest grants come first, so the next run
+    // refresh in half. The oldest connections come first, so the next run
     // continues where this one stopped.
     if (clock().getTime() - startedAt >= budgetMs) {
       result.remaining = idle.length - index;
@@ -48,7 +48,7 @@ export async function refreshIdle(
     }
     const window = lockWindow(ctx, clock());
     const locked = await store.acquireRefreshLock({
-      id: grant.id,
+      id: connection.id,
       ...window,
       refreshedBefore,
     });
