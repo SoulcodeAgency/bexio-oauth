@@ -35,7 +35,7 @@ npm run check          # format, lint, typecheck, unit + integration tests
 npm run test:e2e       # example apps against mock-bexio (starts Postgres / Supabase locally)
 ```
 
-Integration and e2e tests never call the real Bexio. They use `examples/_shared/mock-bexio`. To try against real Bexio, run an example app with your own Bexio OAuth app credentials (see each example's `.env.example`).
+Integration and e2e tests never call the real Bexio. They use `examples/_shared/mock-bexio`, which models the Keycloak behavior the library depends on: rotating refresh tokens with reuse detection, and **one token chain per user and company**. Every new authorization of a user and company (code exchange, or `issueTokens` for tests that stand in for an auth framework) starts a new session, and refresh tokens issued before it fail with `invalid_grant` ("Refresh token issued before the user session started"), as Bexio does. Revoking any of a user's refresh tokens, even one from an older authorization or another company, ends all of the user's current chains, as live tests against Bexio showed. The mock serves one OAuth client; tests that need independent chains use different users or companies (`ADA` has two companies, `GRACE` and `KATHERINE` one each). Like Bexio, its tokens carry `given_name` and `family_name` but no `name`. To try against real Bexio, run an example app with your own Bexio OAuth app credentials (see each example's `.env.example`).
 
 ## 3. Tests
 
@@ -44,7 +44,7 @@ Integration and e2e tests never call the real Bexio. They use `examples/_shared/
 | Unit        | `packages/bexio-oauth/src/**/*.test.ts` | flows, errors, encryption, claim and role mapping, CLI                  | nothing                                                |
 | Integration | `packages/bexio-oauth/test/`            | Postgres store, refresh lock under concurrency, rotation, `refreshIdle` | Postgres (Docker), mock-bexio                          |
 | End-to-end  | `examples/*/e2e/`                       | real auth frameworks + the library, in a browser (Playwright)           | example app, mock-bexio                                |
-| Manual      | `examples/README.md` checklist          | the same flows against live Bexio                                       | your Bexio app credentials; once per release candidate |
+| Manual      | `examples/README.md` test scenarios     | the same flows against live Bexio                                       | your Bexio app credentials; once per release candidate |
 
 All automated layers run on every pull request. There are no nightly or scheduled test runs.
 

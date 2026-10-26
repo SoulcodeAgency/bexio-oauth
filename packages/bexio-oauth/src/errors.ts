@@ -20,7 +20,7 @@ export type BexioOAuthErrorCode =
   | "ambiguous_grant"
   /** The refresh token is dead; the user has to reconnect. */
   | "reauth_required"
-  /** A stored token can't be decrypted (unknown key id, or it belongs to another grant). */
+  /** A stored token can't be decrypted (unknown key id, or it belongs to another connection). */
   | "decryption_failed"
   /** The library was configured incorrectly. */
   | "invalid_config";

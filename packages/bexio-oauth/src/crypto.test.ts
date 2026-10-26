@@ -31,12 +31,10 @@ describe("TokenCipher", () => {
     );
   });
 
-  it("refuses ciphertext that belongs to another grant", async () => {
+  it("refuses ciphertext that belongs to another connection", async () => {
     const cipher = new TokenCipher({ current: "k1", keys: { k1 } });
-    const jwe = await cipher.encrypt("t", "owner-a\0cmp\0sub");
-    await expect(
-      cipher.decrypt(jwe, "owner-b\0cmp\0sub"),
-    ).rejects.toMatchObject({
+    const jwe = await cipher.encrypt("t", "cmp-a\0sub");
+    await expect(cipher.decrypt(jwe, "cmp-b\0sub")).rejects.toMatchObject({
       code: "decryption_failed",
     });
   });

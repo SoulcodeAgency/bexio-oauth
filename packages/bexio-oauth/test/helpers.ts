@@ -12,6 +12,7 @@ import {
 export const REDIRECT_URI = "http://localhost/api/bexio/callback";
 export const ADA = "8f1c2a8e-0001-4000-8000-000000000001";
 export const GRACE = "8f1c2a8e-0002-4000-8000-000000000002";
+export const KATHERINE = "8f1c2a8e-0003-4000-8000-000000000003";
 
 export const keys = { current: "k1", keys: { k1: generateKey() } };
 
@@ -101,7 +102,7 @@ export async function connect(
 
 /**
  * A pool on a fresh schema with the shipped migrations applied, so every test
- * file gets an empty `bexio_grants` table.
+ * file gets empty tables.
  */
 export async function freshDatabase() {
   const url = process.env.DATABASE_URL;
@@ -127,7 +128,7 @@ export async function freshDatabase() {
       return p;
     },
     async truncate() {
-      await pool.query("TRUNCATE bexio_grants");
+      await pool.query("TRUNCATE bexio_grants, bexio_connections");
     },
     async close() {
       await Promise.all(pools.map((p) => p.end()));

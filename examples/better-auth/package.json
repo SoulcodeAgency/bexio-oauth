@@ -14,6 +14,7 @@
   "dependencies": {
     "@soulcode/bexio-oauth": "*",
     "better-auth": "1.7.12",
+    "jose": "6.2.13",
     "next": "16.4.3",
     "pg": "8.23.1",
     "react": "19.3.1",

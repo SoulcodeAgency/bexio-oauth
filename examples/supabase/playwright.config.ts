@@ -1,7 +1,7 @@
 import { defineConfig } from "@playwright/test";
 
-const MOCK_PORT = 9402;
-const APP_PORT = 3300;
+const MOCK_PORT = Number(process.env.E2E_MOCK_PORT ?? 9402);
+const APP_PORT = Number(process.env.E2E_APP_PORT ?? 3300);
 const mock = `http://127.0.0.1:${MOCK_PORT}`;
 
 // Defaults match `supabase start` with this example's config.toml. The anon
@@ -42,7 +42,7 @@ export default defineConfig({
       reuseExistingServer: !process.env.CI,
     },
     {
-      command: "npm run build && npm run start",
+      command: `npm run build && npx next start -p ${APP_PORT}`,
       url: `${env.APP_URL}/`,
       env,
       timeout: 240_000,

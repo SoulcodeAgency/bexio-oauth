@@ -5,14 +5,15 @@ import type { Migration } from "./sql.js";
 export const MIGRATIONS: readonly Migration[] = [
   {
     number: 1,
-    name: "0001_bexio_grants.sql",
-    sql: `-- @soulcode/bexio-oauth 0001: the grants table.
--- One row per (owner, Bexio company, Bexio user). Token columns hold JWE
--- ciphertext; only your server-side database role should be able to read them.
+    name: "0001_bexio_oauth.sql",
+    sql: `-- @soulcode/bexio-oauth 0001: connections and grants.
+-- Token columns hold JWE ciphertext; only your server-side database role
+-- should be able to read these tables.
 
-CREATE TABLE IF NOT EXISTS bexio_grants (
+-- One row per Bexio identity (company, user): the tokens of its one refresh
+-- token chain, shared by every owner that connected this identity.
+CREATE TABLE IF NOT EXISTS bexio_connections (
   id                    uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-  owner_id              text        NOT NULL,
   bexio_company_id      text        NOT NULL,
   bexio_user_id         text        NOT NULL,
   bexio_company_user_id integer,
@@ -28,16 +29,31 @@ CREATE TABLE IF NOT EXISTS bexio_grants (
   scope                 text,
   refresh_locked_until  timestamptz,
   refresh_lock_token    text,
+  authorized_at         timestamptz NOT NULL,
   last_refreshed_at     timestamptz NOT NULL DEFAULT now(),
   created_at            timestamptz NOT NULL DEFAULT now(),
   updated_at            timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT bexio_grants_owner_company_user_key UNIQUE (owner_id, bexio_company_id, bexio_user_id)
+  CONSTRAINT bexio_connections_company_user_key UNIQUE (bexio_company_id, bexio_user_id)
 );
 
--- refreshIdle(): active grants by last refresh.
-CREATE INDEX IF NOT EXISTS bexio_grants_idle_idx
-  ON bexio_grants (last_refreshed_at)
+-- refreshIdle(): active connections by last refresh.
+CREATE INDEX IF NOT EXISTS bexio_connections_idle_idx
+  ON bexio_connections (last_refreshed_at)
   WHERE status = 'active';
+
+-- One row per (owner, connection): an owner's access to a connection. A
+-- connection is deleted only once no grant references it (RESTRICT).
+CREATE TABLE IF NOT EXISTS bexio_grants (
+  id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_id      text        NOT NULL,
+  connection_id uuid        NOT NULL REFERENCES bexio_connections (id) ON DELETE RESTRICT,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT bexio_grants_owner_connection_key UNIQUE (owner_id, connection_id)
+);
+
+-- Disconnect checks whether a connection has grants left.
+CREATE INDEX IF NOT EXISTS bexio_grants_connection_idx
+  ON bexio_grants (connection_id);
 `,
   },
 ];

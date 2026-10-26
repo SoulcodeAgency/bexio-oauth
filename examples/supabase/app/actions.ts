@@ -16,8 +16,15 @@ export async function signUpOrIn(formData: FormData) {
   if (signIn.error) {
     // Local stack: email confirmation is off, so sign-up signs the user in.
     const signUp = await supabase.auth.signUp({ email, password });
-    if (signUp.error)
-      redirect(`/?auth_error=${encodeURIComponent(signUp.error.message)}`);
+    if (signUp.error) {
+      // The email exists, so the password was wrong, or the account was
+      // created by Sign in with Bexio and has no password at all.
+      const message =
+        signUp.error.code === "user_already_exists"
+          ? "Wrong password, or this account signs in with Bexio"
+          : signUp.error.message;
+      redirect(`/?auth_error=${encodeURIComponent(message)}`);
+    }
   }
   redirect("/");
 }

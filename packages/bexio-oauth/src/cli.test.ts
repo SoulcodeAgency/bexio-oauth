@@ -16,16 +16,16 @@ describe("cli", () => {
   it("sql prints every migration in order", async () => {
     const { code, stdout } = await cli("sql");
     expect(code).toBe(0);
-    expect(stdout).toContain("-- 0001_bexio_grants.sql");
-    expect(stdout).toContain("CREATE TABLE IF NOT EXISTS bexio_grants");
+    expect(stdout).toContain("-- 0001_bexio_oauth.sql");
+    expect(stdout).toContain("CREATE TABLE IF NOT EXISTS bexio_connections");
   });
 
   it("sql --from <n> skips earlier migrations", async () => {
     expect((await cli("sql", "--from", "1")).stdout).toContain(
-      "0001_bexio_grants.sql",
+      "0001_bexio_oauth.sql",
     );
     expect((await cli("sql", "--from", "2")).stdout).not.toContain(
-      "0001_bexio_grants.sql",
+      "0001_bexio_oauth.sql",
     );
     expect((await cli("sql", "--from", "x")).code).toBe(1);
   });

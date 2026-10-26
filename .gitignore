@@ -12,3 +12,6 @@ test-results/
 supabase/.temp/
 .DS_Store
 next-env.d.ts
+
+# Written by `next dev`; the repo guidance is the root AGENTS.md.
+examples/*/AGENTS.md

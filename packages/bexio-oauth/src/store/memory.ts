@@ -1,63 +1,120 @@
 import { randomUUID } from "node:crypto";
 import type {
+  ConnectionRecord,
+  ConnectionRefresh,
   GrantRecord,
-  GrantRefresh,
   GrantStore,
   GrantUpsert,
   LockRequest,
 } from "./types.js";
+
+interface StoredGrant {
+  id: string;
+  ownerId: string;
+  connectionId: string;
+  createdAt: Date;
+}
 
 /**
  * In-memory store for tests. Same semantics as `postgresStore`, but data
  * lives in this process only.
  */
 export function memoryStore(): GrantStore {
-  const rows = new Map<string, GrantRecord>();
+  const connections = new Map<string, ConnectionRecord>();
+  const grants = new Map<string, StoredGrant>();
   const lockTokens = new Map<string, string>();
-  const copy = (row: GrantRecord): GrantRecord => ({ ...row });
+  const copy = (row: ConnectionRecord): ConnectionRecord => ({ ...row });
+  const joined = (grant: StoredGrant): GrantRecord => ({
+    id: grant.id,
+    ownerId: grant.ownerId,
+    createdAt: grant.createdAt,
+    connection: copy(connections.get(grant.connectionId)!),
+  });
+  const held = (id: string, lockToken: string) => {
+    const row = connections.get(id);
+    if (!row || lockTokens.get(id) !== lockToken) return null;
+    lockTokens.delete(id);
+    row.refreshLockedUntil = null;
+    return row;
+  };
 
   return {
     async upsertGrant(input: GrantUpsert) {
-      const existing = [...rows.values()].find(
-        (r) =>
-          r.ownerId === input.ownerId &&
-          r.companyId === input.companyId &&
-          r.userId === input.userId,
+      const { ownerId, now, ...fields } = input;
+      const existing = [...connections.values()].find(
+        (c) => c.companyId === input.companyId && c.userId === input.userId,
       );
-      const { now, ...fields } = input;
-      const row: GrantRecord = {
-        id: existing?.id ?? randomUUID(),
-        ...fields,
-        status: "active",
-        refreshLockedUntil: null,
-        lastRefreshedAt: now,
-        createdAt: existing?.createdAt ?? now,
-        updatedAt: now,
-      };
-      rows.set(row.id, row);
-      lockTokens.delete(row.id);
-      return copy(row);
+      // An older authorization than the stored one only links the grant
+      // (see GrantUpsert).
+      const connection: ConnectionRecord =
+        existing && input.authorizedAt < existing.authorizedAt
+          ? existing
+          : {
+              id: existing?.id ?? randomUUID(),
+              ...fields,
+              status: "active",
+              refreshLockedUntil: null,
+              lastRefreshedAt: now,
+              createdAt: existing?.createdAt ?? now,
+              updatedAt: now,
+            };
+      if (connection !== existing) {
+        connections.set(connection.id, connection);
+        lockTokens.delete(connection.id);
+      }
+      let grant = [...grants.values()].find(
+        (g) => g.ownerId === ownerId && g.connectionId === connection.id,
+      );
+      if (!grant) {
+        grant = {
+          id: randomUUID(),
+          ownerId,
+          connectionId: connection.id,
+          createdAt: now,
+        };
+        grants.set(grant.id, grant);
+      }
+      return joined(grant);
     },
 
     async findGrants({ ownerId, companyId, grantId }) {
-      return [...rows.values()]
+      return [...grants.values()]
         .filter(
-          (r) =>
-            r.ownerId === ownerId &&
-            (companyId === undefined || r.companyId === companyId) &&
-            (grantId === undefined || r.id === grantId),
+          (g) =>
+            g.ownerId === ownerId &&
+            (companyId === undefined ||
+              connections.get(g.connectionId)!.companyId === companyId) &&
+            (grantId === undefined || g.id === grantId),
         )
         .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
-        .map(copy);
+        .map(joined);
     },
 
-    async getGrant(id) {
-      const row = rows.get(id);
+    async deleteGrant(id) {
+      grants.delete(id);
+    },
+
+    async getConnection(id) {
+      const row = connections.get(id);
       return row ? copy(row) : null;
     },
 
+    async deleteUnusedConnection(id) {
+      const row = connections.get(id);
+      if (!row || [...grants.values()].some((g) => g.connectionId === id))
+        return null;
+      connections.delete(id);
+      lockTokens.delete(id);
+      return {
+        connection: copy(row),
+        userHasOtherConnections: [...connections.values()].some(
+          (c) => c.userId === row.userId,
+        ),
+      };
+    },
+
     async acquireRefreshLock(req: LockRequest) {
-      const row = rows.get(req.id);
+      const row = connections.get(req.id);
       if (!row || row.status !== "active") return null;
       if (row.refreshLockedUntil && row.refreshLockedUntil > req.now)
         return null;
@@ -73,10 +130,9 @@ export function memoryStore(): GrantStore {
       return copy(row);
     },
 
-    async saveRefreshed(id, lockToken, refresh: GrantRefresh) {
-      const row = rows.get(id);
-      if (!row || lockTokens.get(id) !== lockToken) return null;
-      lockTokens.delete(id);
+    async saveRefreshed(id, lockToken, refresh: ConnectionRefresh) {
+      const row = held(id, lockToken);
+      if (!row) return null;
       row.accessToken = refresh.accessToken;
       row.refreshToken = refresh.refreshToken ?? row.refreshToken;
       row.accessExpiresAt = refresh.accessExpiresAt;
@@ -84,37 +140,31 @@ export function memoryStore(): GrantStore {
       row.scope = refresh.scope ?? row.scope;
       row.role = refresh.role ?? row.role;
       row.status = "active";
-      row.refreshLockedUntil = null;
       row.lastRefreshedAt = refresh.now;
       row.updatedAt = refresh.now;
       return copy(row);
     },
 
     async markReauthRequired(id, lockToken, now) {
-      const row = rows.get(id);
-      if (!row || lockTokens.get(id) !== lockToken) return;
-      lockTokens.delete(id);
+      const row = held(id, lockToken);
+      if (!row) return null;
       row.status = "reauth_required";
-      row.refreshLockedUntil = null;
       row.updatedAt = now;
+      return copy(row);
     },
 
     async releaseRefreshLock(id, lockToken) {
-      const row = rows.get(id);
-      if (!row || lockTokens.get(id) !== lockToken) return;
-      lockTokens.delete(id);
-      row.refreshLockedUntil = null;
+      held(id, lockToken);
     },
 
-    async deleteGrant(id) {
-      rows.delete(id);
-      lockTokens.delete(id);
-    },
-
-    async listIdleGrants({ refreshedBefore, limit }) {
-      return [...rows.values()]
+    async listIdleConnections({ refreshedBefore, limit }) {
+      const linked = new Set([...grants.values()].map((g) => g.connectionId));
+      return [...connections.values()]
         .filter(
-          (r) => r.status === "active" && r.lastRefreshedAt < refreshedBefore,
+          (c) =>
+            c.status === "active" &&
+            c.lastRefreshedAt < refreshedBefore &&
+            linked.has(c.id),
         )
         .sort(
           (a, b) => a.lastRefreshedAt.getTime() - b.lastRefreshedAt.getTime(),

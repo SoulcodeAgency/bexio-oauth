@@ -4,6 +4,7 @@ import { authClient } from "@/lib/auth-client";
 export function SignInWithBexio() {
   return (
     <button
+      className="primary"
       data-testid="sign-in"
       onClick={() =>
         authClient.signIn.social({ provider: "bexio", callbackURL: "/" })

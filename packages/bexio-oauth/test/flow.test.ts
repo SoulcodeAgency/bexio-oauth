@@ -12,6 +12,7 @@ import {
 import {
   ADA,
   GRACE,
+  KATHERINE,
   authorize,
   client,
   connect,
@@ -146,7 +147,7 @@ describe.each(backends)("$name store", ({ make }) => {
   });
 
   describe("callback", () => {
-    it("saves one grant with encrypted tokens and mapped claims, clears the cookie, redirects to returnTo", async () => {
+    it("saves the connection with encrypted tokens and mapped claims and the owner's grant, clears the cookie, redirects to returnTo", async () => {
       const bexio = client(mock, store);
       const { request } = await authorize(bexio, mock, "ws-1", {
         sub: ADA,
@@ -173,11 +174,13 @@ describe.each(backends)("$name store", ({ make }) => {
         status: "active",
       });
       const [row] = await store.findGrants({ ownerId: "ws-1" });
-      expect(decodeProtectedHeader(row!.accessToken)).toMatchObject({
+      expect(decodeProtectedHeader(row!.connection.accessToken)).toMatchObject({
         alg: "dir",
         kid: "k1",
       });
-      expect(decodeProtectedHeader(row!.refreshToken!)).toMatchObject({
+      expect(
+        decodeProtectedHeader(row!.connection.refreshToken!),
+      ).toMatchObject({
         alg: "dir",
         kid: "k1",
       });
@@ -329,14 +332,14 @@ describe.each(backends)("$name store", ({ make }) => {
       });
       const [before] = await store.findGrants({ ownerId: "ws-1" });
       const lock = {
-        id: before!.id,
+        id: before!.connection.id,
         now: new Date(),
         lockUntil: new Date(Date.now() + 30_000),
         lockToken: "t",
         refreshedBefore: new Date(Date.now() + 1),
       };
       await store.acquireRefreshLock(lock);
-      await store.markReauthRequired(before!.id, "t", new Date());
+      await store.markReauthRequired(before!.connection.id, "t", new Date());
       const second = await connect(bexio, mock, "ws-1", {
         sub: ADA,
         companyId: "cmp-alpha",
@@ -344,19 +347,204 @@ describe.each(backends)("$name store", ({ make }) => {
       const rows = await store.findGrants({ ownerId: "ws-1" });
       expect(rows).toHaveLength(1);
       expect(second.grant.id).toBe(first.grant.id);
-      expect(rows[0]!.status).toBe("active");
-      expect(rows[0]!.accessToken).not.toBe(before!.accessToken);
+      expect(rows[0]!.connection.status).toBe("active");
+      expect(rows[0]!.connection.accessToken).not.toBe(
+        before!.connection.accessToken,
+      );
+    });
+  });
+
+  describe("owners sharing a Bexio identity", () => {
+    const ada = { sub: ADA, companyId: "cmp-alpha" };
+
+    it("connect A, connect B: both refresh, through one refresh at Bexio", async () => {
+      const clock = testClock();
+      const bexio = client(mock, store, { clock: clock.now });
+      const a = await connect(bexio, mock, "ws-a", ada);
+      const b = await connect(bexio, mock, "ws-b", ada);
+      expect(b.grant.id).not.toBe(a.grant.id);
+      expect(b.grant.connectionId).toBe(a.grant.connectionId);
+      clock.advance(10 * 60_000);
+
+      const refreshes = mock.stats.refreshTokenGrants;
+      const rejected = mock.stats.rejectedRefreshes;
+      // A's tokens came from the older authorization, which B's restarted at
+      // Bexio: A only works because it shares B's connection.
+      const fromA = await bexio.getAccessToken({ ownerId: "ws-a" });
+      const fromB = await bexio.getAccessToken({ ownerId: "ws-b" });
+      expect(fromB.accessToken).toBe(fromA.accessToken);
+      expect(fromA.grant).toMatchObject({ ownerId: "ws-a", status: "active" });
+      expect(fromB.grant).toMatchObject({ ownerId: "ws-b", status: "active" });
+      expect(mock.stats.refreshTokenGrants).toBe(refreshes + 1);
+      expect(mock.stats.rejectedRefreshes).toBe(rejected);
     });
 
-    it("two owners can connect the same Bexio user and company, and disconnecting one keeps the other", async () => {
-      const bexio = client(mock, store);
-      await connect(bexio, mock, "ws-a", { sub: ADA, companyId: "cmp-alpha" });
-      await connect(bexio, mock, "ws-b", { sub: ADA, companyId: "cmp-alpha" });
+    it("disconnecting A keeps B working and revokes nothing", async () => {
+      const clock = testClock();
+      const bexio = client(mock, store, { clock: clock.now });
+      await connect(bexio, mock, "ws-a", ada);
+      await connect(bexio, mock, "ws-b", ada);
+      const revocations = mock.stats.revocations;
       await bexio.disconnect({ ownerId: "ws-a" });
-      expect(await bexio.listGrants({ ownerId: "ws-a" })).toHaveLength(0);
+      expect(mock.stats.revocations).toBe(revocations);
+      expect(await bexio.listGrants({ ownerId: "ws-a" })).toEqual([]);
+
+      clock.advance(10 * 60_000);
+      const refreshes = mock.stats.refreshTokenGrants;
       await expect(
         bexio.getAccessToken({ ownerId: "ws-b" }),
       ).resolves.toMatchObject({ grant: { ownerId: "ws-b" } });
+      expect(mock.stats.refreshTokenGrants).toBe(refreshes + 1);
+    });
+
+    it("disconnecting the last owner revokes at Bexio and deletes the connection", async () => {
+      const bexio = client(mock, store);
+      const a = await connect(bexio, mock, "ws-a", ada);
+      await connect(bexio, mock, "ws-b", ada);
+      await bexio.disconnect({ ownerId: "ws-a" });
+      const revocations = mock.stats.revocations;
+      await bexio.disconnect({ ownerId: "ws-b" });
+      expect(mock.stats.revocations).toBe(revocations + 1);
+      expect(await store.getConnection(a.grant.connectionId)).toBeNull();
+    });
+
+    it("reconnecting one reauth_required owner revives all of them", async () => {
+      const clock = testClock();
+      const bexio = client(mock, store, { clock: clock.now });
+      await connect(bexio, mock, "ws-a", ada);
+      await connect(bexio, mock, "ws-b", ada);
+      mock.revokeSessions(ADA);
+      clock.advance(10 * 60_000);
+      await expect(
+        bexio.getAccessToken({ ownerId: "ws-a" }),
+      ).rejects.toMatchObject({ code: "reauth_required" });
+      // B's grant shares the dead connection: no second call to Bexio.
+      const rejected = mock.stats.rejectedRefreshes;
+      await expect(
+        bexio.getAccessToken({ ownerId: "ws-b" }),
+      ).rejects.toMatchObject({ code: "reauth_required" });
+      expect(mock.stats.rejectedRefreshes).toBe(rejected);
+
+      await connect(bexio, mock, "ws-b", ada);
+      for (const ownerId of ["ws-a", "ws-b"]) {
+        expect((await bexio.listGrants({ ownerId }))[0]!.status).toBe("active");
+        await expect(bexio.getAccessToken({ ownerId })).resolves.toBeTruthy();
+      }
+    });
+
+    it("owners of different identities stay independent", async () => {
+      const clock = testClock();
+      const bexio = client(mock, store, { clock: clock.now });
+      const a = await connect(bexio, mock, "ws-a", ada);
+      const b = await connect(bexio, mock, "ws-b", { sub: GRACE });
+      expect(b.grant.connectionId).not.toBe(a.grant.connectionId);
+
+      const revocations = mock.stats.revocations;
+      await bexio.disconnect({ ownerId: "ws-a" });
+      expect(mock.stats.revocations).toBe(revocations + 1);
+      clock.advance(10 * 60_000);
+      await expect(
+        bexio.getAccessToken({ ownerId: "ws-b" }),
+      ).resolves.toMatchObject({ grant: { userId: GRACE, status: "active" } });
+    });
+
+    it("a slower connect that authorized earlier doesn't overwrite a newer one", async () => {
+      const clock = testClock();
+      // Hold A's connect after its code exchange, in the permissions call,
+      // while B authorizes later and finishes first.
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      let reached!: () => void;
+      const holding = new Promise<void>((resolve) => (reached = resolve));
+      let hold = true;
+      const slow: typeof fetch = async (input, init) => {
+        const url = String(input instanceof Request ? input.url : input);
+        if (hold && url.includes("/3.0/permissions")) {
+          hold = false;
+          reached();
+          await held;
+        }
+        return fetch(input, init);
+      };
+      const a = client(mock, store, { clock: clock.now, fetch: slow });
+      const b = client(mock, store, { clock: clock.now });
+      const { request } = await authorize(a, mock, "ws-a", ada);
+      const connectingA = a.handleCallback(request, { ownerId: "ws-a" });
+      await holding;
+      // Token issue times have one-second resolution.
+      await new Promise((r) => setTimeout(r, 1_100));
+      await connect(b, mock, "ws-b", ada);
+      release();
+      await connectingA;
+
+      clock.advance(10 * 60_000);
+      const rejected = mock.stats.rejectedRefreshes;
+      for (const ownerId of ["ws-a", "ws-b"]) {
+        await expect(b.getAccessToken({ ownerId })).resolves.toMatchObject({
+          grant: { ownerId, status: "active" },
+        });
+      }
+      expect(mock.stats.rejectedRefreshes).toBe(rejected);
+    });
+
+    it("disconnect doesn't revoke a reauth_required connection", async () => {
+      const clock = testClock();
+      const bexio = client(mock, store, { clock: clock.now });
+      await connect(bexio, mock, "ws-a", ada);
+      mock.revokeSessions(ADA);
+      clock.advance(10 * 60_000);
+      await expect(
+        bexio.getAccessToken({ ownerId: "ws-a" }),
+      ).rejects.toMatchObject({ code: "reauth_required" });
+      const revocations = mock.stats.revocations;
+      await bexio.disconnect({ ownerId: "ws-a" });
+      expect(mock.stats.revocations).toBe(revocations);
+      expect(await bexio.listGrants({ ownerId: "ws-a" })).toEqual([]);
+    });
+
+    it("disconnect doesn't revoke while the same Bexio user has a connection for another company", async () => {
+      const bexio = client(mock, store);
+      await connect(bexio, mock, "ws-a", ada);
+      const beta = await connect(bexio, mock, "ws-b", {
+        sub: ADA,
+        companyId: "cmp-beta",
+      });
+      const revocations = mock.stats.revocations;
+      await bexio.disconnect({ ownerId: "ws-b" });
+      expect(mock.stats.revocations).toBe(revocations);
+      expect(await store.getConnection(beta.grant.connectionId)).toBeNull();
+    });
+
+    it("known limit: a connect that authorizes while the last owner's disconnect revokes can lose its chain", async () => {
+      // The store sees no grant left and deletes the connection; before the
+      // revocation reaches Bexio, another owner authorizes the same identity.
+      // The revocation ends that new chain at Bexio (and in the mock),
+      // which the database can't see. The owner sees reauth_required at its
+      // next refresh and reconnects (docs §10).
+      const clock = testClock();
+      const base = client(mock, store, { clock: clock.now });
+      let connected = false;
+      const racing: typeof fetch = async (input, init) => {
+        const url = String(input instanceof Request ? input.url : input);
+        if (url.endsWith("/revoke") && !connected) {
+          connected = true;
+          await connect(base, mock, "ws-b", ada);
+        }
+        return fetch(input, init);
+      };
+      await connect(base, mock, "ws-a", ada);
+      await client(mock, store, { clock: clock.now, fetch: racing }).disconnect(
+        { ownerId: "ws-a" },
+      );
+      expect(connected).toBe(true);
+      clock.advance(10 * 60_000);
+      await expect(
+        base.getAccessToken({ ownerId: "ws-b" }),
+      ).rejects.toMatchObject({ code: "reauth_required" });
+      await connect(base, mock, "ws-b", ada);
+      await expect(
+        base.getAccessToken({ ownerId: "ws-b" }),
+      ).resolves.toBeTruthy();
     });
   });
 
@@ -389,7 +577,7 @@ describe.each(backends)("$name store", ({ make }) => {
       });
     });
 
-    it("falls back to userinfo for company claims when there is no ID token", async () => {
+    it("reads the profile from userinfo when there is no ID token", async () => {
       const bexio = client(mock, store);
       const tokens = await mock.issueTokens({ sub: GRACE }, { idToken: false });
       const userinfo = mock.stats.userinfo;
@@ -403,6 +591,8 @@ describe.each(backends)("$name store", ({ make }) => {
       expect(mock.stats.userinfo).toBe(userinfo + 1);
       expect(grant).toMatchObject({
         companyId: "cmp-alpha",
+        companyName: "Alpha AG",
+        userName: "Grace Hopper",
         userEmail: "grace@example.com",
       });
     });
@@ -526,8 +716,12 @@ describe.each(backends)("$name store", ({ make }) => {
       expect(mock.stats.refreshTokenGrants).toBe(refreshes + 1);
       expect(second.accessToken).not.toBe(first.accessToken);
       const [after] = await store.findGrants({ ownerId: "ws-1" });
-      expect(after!.refreshToken).not.toBe(before!.refreshToken);
-      expect(after!.lastRefreshedAt.getTime()).toBe(clock.now().getTime());
+      expect(after!.connection.refreshToken).not.toBe(
+        before!.connection.refreshToken,
+      );
+      expect(after!.connection.lastRefreshedAt.getTime()).toBe(
+        clock.now().getTime(),
+      );
       // The rotated token works again on the next expiry.
       clock.advance(10 * 60_000);
       await expect(
@@ -535,7 +729,7 @@ describe.each(backends)("$name store", ({ make }) => {
       ).resolves.toBeTruthy();
     });
 
-    it("marks the grant reauth_required when Bexio rejects the refresh token, then stops calling Bexio", async () => {
+    it("marks the connection reauth_required when Bexio rejects the refresh token, then stops calling Bexio", async () => {
       const clock = testClock();
       const bexio = client(mock, store, { clock: clock.now });
       await connect(bexio, mock, "ws-1", { sub: GRACE });
@@ -640,42 +834,46 @@ describe.each(backends)("$name store", ({ make }) => {
   });
 
   describe("lost refresh lock", () => {
-    it("a reconnect during a refresh wins, and the caller gets the reconnected token", async () => {
-      const clock = testClock();
-      let reconnected: string | undefined;
-      const base = client(mock, store, { clock: clock.now });
-      // Delay the refresh call and reconnect the same grant while it is in flight.
-      const fetchImpl: typeof fetch = async (input, init) => {
-        const isRefresh =
-          String(input instanceof Request ? input.url : input).endsWith(
-            "/token",
-          ) && bodyText(init).includes("grant_type=refresh_token");
-        if (isRefresh && !reconnected) {
-          await connect(base, mock, "ws-1", {
-            sub: ADA,
-            companyId: "cmp-alpha",
-          });
-          reconnected = (await store.findGrants({ ownerId: "ws-1" }))[0]!
-            .accessToken;
-        }
-        return fetch(input, init);
-      };
-      await connect(base, mock, "ws-1", { sub: ADA, companyId: "cmp-alpha" });
-      clock.advance(10 * 60_000);
-      const racing = client(mock, store, {
-        clock: clock.now,
-        fetch: fetchImpl,
-      });
-      const result = await racing.getAccessToken({ ownerId: "ws-1" });
+    it.each(["ws-1", "ws-2"])(
+      "a reconnect (by %s) during a refresh wins, and the caller gets the reconnected token",
+      async (reconnecting) => {
+        const clock = testClock();
+        const ada = { sub: ADA, companyId: "cmp-alpha" };
+        let reconnected: string | undefined;
+        const base = client(mock, store, { clock: clock.now });
+        // Delay the refresh call and reconnect the identity while it is in
+        // flight. The reconnect restarts the chain at Bexio, so the in-flight
+        // refresh then fails with invalid_grant.
+        const fetchImpl: typeof fetch = async (input, init) => {
+          const isRefresh =
+            String(input instanceof Request ? input.url : input).endsWith(
+              "/token",
+            ) && bodyText(init).includes("grant_type=refresh_token");
+          if (isRefresh && !reconnected) {
+            await connect(base, mock, reconnecting, ada);
+            reconnected = (await store.findGrants({ ownerId: "ws-1" }))[0]!
+              .connection.accessToken;
+          }
+          return fetch(input, init);
+        };
+        await connect(base, mock, "ws-1", ada);
+        clock.advance(10 * 60_000);
+        const racing = client(mock, store, {
+          clock: clock.now,
+          fetch: fetchImpl,
+        });
+        const result = await racing.getAccessToken({ ownerId: "ws-1" });
 
-      const [row] = await store.findGrants({ ownerId: "ws-1" });
-      // The fenced save changed nothing: the reconnect's tokens are still there.
-      expect(row!.accessToken).toBe(reconnected);
-      expect(row!.status).toBe("active");
-      expect(result.accessToken).toBe(
-        (await base.getAccessToken({ ownerId: "ws-1" })).accessToken,
-      );
-    });
+        const [row] = await store.findGrants({ ownerId: "ws-1" });
+        // The fenced writes changed nothing: the reconnect's tokens are
+        // still there, and the rejected refresh didn't mark the connection.
+        expect(row!.connection.accessToken).toBe(reconnected);
+        expect(row!.connection.status).toBe("active");
+        expect(result.accessToken).toBe(
+          (await base.getAccessToken({ ownerId: "ws-1" })).accessToken,
+        );
+      },
+    );
 
     it("gives up with idp_error when it keeps losing the lock past the deadline", async () => {
       const clock = testClock();
@@ -702,9 +900,11 @@ describe.each(backends)("$name store", ({ make }) => {
   });
 
   describe("decryption", () => {
-    it("a missing key fails with decryption_failed but leaves the grant intact", async () => {
+    it("a missing key fails with decryption_failed but leaves the connection intact", async () => {
       const clock = testClock();
-      await connect(client(mock, store, { clock: clock.now }), mock, "ws-1");
+      const bexio = client(mock, store, { clock: clock.now });
+      await connect(bexio, mock, "ws-1");
+      await connect(bexio, mock, "ws-2");
       clock.advance(10 * 60_000);
       const other = client(mock, store, {
         clock: clock.now,
@@ -713,19 +913,21 @@ describe.each(backends)("$name store", ({ make }) => {
       await expect(
         other.getAccessToken({ ownerId: "ws-1" }),
       ).rejects.toMatchObject({ code: "decryption_failed" });
-      const [grant] = await other.listGrants({ ownerId: "ws-1" });
-      expect(grant!.status).toBe("active");
+      for (const ownerId of ["ws-1", "ws-2"]) {
+        const [grant] = await other.listGrants({ ownerId });
+        expect(grant).toMatchObject({ status: "active" });
+      }
+      const [row] = await store.findGrants({ ownerId: "ws-1" });
+      expect(row!.connection.refreshLockedUntil).toBeNull();
       // Restoring the key fixes it: the lock was released, nothing was burned.
       await expect(
-        client(mock, store, { clock: clock.now }).getAccessToken({
-          ownerId: "ws-1",
-        }),
+        bexio.getAccessToken({ ownerId: "ws-2" }),
       ).resolves.toBeTruthy();
     });
   });
 
   describe("disconnect", () => {
-    it("deletes the grant when the issuer has no revocation endpoint", async () => {
+    it("deletes the grant and its connection when the issuer has no revocation endpoint", async () => {
       const noRevoke = await startMockBexio({
         clientId: "test-client",
         clientSecret: "test-secret",
@@ -733,38 +935,41 @@ describe.each(backends)("$name store", ({ make }) => {
       });
       try {
         const bexio = client(noRevoke, store);
-        await connect(bexio, noRevoke, "ws-1");
+        const { grant } = await connect(bexio, noRevoke, "ws-1");
         await bexio.disconnect({ ownerId: "ws-1" });
         expect(noRevoke.stats.revocations).toBe(0);
         expect(await bexio.listGrants({ ownerId: "ws-1" })).toHaveLength(0);
+        expect(await store.getConnection(grant.connectionId)).toBeNull();
       } finally {
         await noRevoke.close();
       }
     });
 
-    it("revokes the refresh token at Bexio and deletes the grant", async () => {
+    it("revokes the refresh token at Bexio and deletes the grant and its connection", async () => {
       const bexio = client(mock, store);
-      await connect(bexio, mock, "ws-1");
+      const { grant } = await connect(bexio, mock, "ws-1");
       const revocations = mock.stats.revocations;
       await bexio.disconnect({ ownerId: "ws-1" });
       expect(mock.stats.revocations).toBe(revocations + 1);
       expect(await bexio.listGrants({ ownerId: "ws-1" })).toHaveLength(0);
+      expect(await store.getConnection(grant.connectionId)).toBeNull();
     });
 
-    it("still deletes the grant when revocation fails", async () => {
+    it("still deletes the grant and its connection when revocation fails", async () => {
       const fetchImpl: typeof fetch = (input, init) =>
         String(input instanceof Request ? input.url : input).includes("/revoke")
           ? Promise.reject(new TypeError("network down"))
           : fetch(input, init);
       const bexio = client(mock, store, { fetch: fetchImpl });
-      await connect(bexio, mock, "ws-1");
+      const { grant } = await connect(bexio, mock, "ws-1");
       await bexio.disconnect({ ownerId: "ws-1" });
       expect(await bexio.listGrants({ ownerId: "ws-1" })).toHaveLength(0);
+      expect(await store.getConnection(grant.connectionId)).toBeNull();
     });
   });
 
   describe("refreshIdle", () => {
-    it("reports idle grants as failed instead of throwing when Bexio is unreachable", async () => {
+    it("reports idle connections as failed instead of throwing when Bexio is unreachable", async () => {
       const clock = testClock();
       await connect(client(mock, store, { clock: clock.now }), mock, "idle");
       clock.advance(8 * 86_400_000);
@@ -782,13 +987,13 @@ describe.each(backends)("$name store", ({ make }) => {
       });
     });
 
-    it("skips idle grants another process is refreshing", async () => {
+    it("skips idle connections another process is refreshing", async () => {
       const clock = testClock();
       const bexio = client(mock, store, { clock: clock.now });
       const { grant } = await connect(bexio, mock, "busy");
       clock.advance(8 * 86_400_000);
       await store.acquireRefreshLock({
-        id: grant.id,
+        id: grant.connectionId,
         now: clock.now(),
         lockUntil: new Date(clock.now().getTime() + 30_000),
         lockToken: "someone-else",
@@ -803,16 +1008,20 @@ describe.each(backends)("$name store", ({ make }) => {
       });
     });
 
-    it("refreshes idle grants, skips fresh ones, and marks dead ones", async () => {
+    it("refreshes idle connections once for all their owners, skips fresh ones, and marks dead ones", async () => {
       const clock = testClock();
       const bexio = client(mock, store, { clock: clock.now });
-      await connect(bexio, mock, "idle", { sub: ADA, companyId: "cmp-alpha" });
+      const ada = { sub: ADA, companyId: "cmp-alpha" };
+      await connect(bexio, mock, "idle-1", ada);
+      await connect(bexio, mock, "idle-2", ada);
       await connect(bexio, mock, "dead", { sub: GRACE });
       clock.advance(8 * 86_400_000);
-      await connect(bexio, mock, "fresh", { sub: ADA, companyId: "cmp-beta" });
+      await connect(bexio, mock, "fresh", { sub: KATHERINE });
       mock.revokeSessions(GRACE);
 
+      const refreshes = mock.stats.refreshTokenGrants;
       const result = await bexio.refreshIdle({ idleFor: "7d" });
+      // Counts connections: idle-1 and idle-2 share one.
       expect(result).toEqual({
         refreshed: 1,
         skipped: 0,
@@ -820,9 +1029,12 @@ describe.each(backends)("$name store", ({ make }) => {
         failed: 0,
         remaining: 0,
       });
-      expect(
-        (await bexio.listGrants({ ownerId: "idle" }))[0]!.lastRefreshedAt,
-      ).toEqual(clock.now());
+      expect(mock.stats.refreshTokenGrants).toBe(refreshes + 1);
+      for (const ownerId of ["idle-1", "idle-2"]) {
+        expect(
+          (await bexio.listGrants({ ownerId }))[0]!.lastRefreshedAt,
+        ).toEqual(clock.now());
+      }
       expect((await bexio.listGrants({ ownerId: "dead" }))[0]!.status).toBe(
         "reauth_required",
       );
@@ -835,7 +1047,7 @@ describe.each(backends)("$name store", ({ make }) => {
       });
     });
 
-    it("stops before the next grant once timeBudget is spent, and reports the rest as remaining", async () => {
+    it("stops before the next connection once timeBudget is spent, and reports the rest as remaining", async () => {
       const clock = testClock();
       // Every refresh "takes" 10 s on the test clock.
       const fetchImpl: typeof fetch = (input, init) => {
@@ -847,8 +1059,10 @@ describe.each(backends)("$name store", ({ make }) => {
         return fetch(input, init);
       };
       const bexio = client(mock, store, { clock: clock.now, fetch: fetchImpl });
-      for (const owner of ["idle-1", "idle-2", "idle-3"])
-        await connect(bexio, mock, owner);
+      // Three identities, so three connections.
+      await connect(bexio, mock, "idle-1", { sub: ADA });
+      await connect(bexio, mock, "idle-2", { sub: GRACE });
+      await connect(bexio, mock, "idle-3", { sub: KATHERINE });
       clock.advance(8 * 86_400_000);
 
       // 0 s and 10 s elapsed: refresh; 20 s elapsed: over the 15 s budget.
@@ -861,7 +1075,7 @@ describe.each(backends)("$name store", ({ make }) => {
         failed: 0,
         remaining: 1,
       });
-      // The next run picks up the grant this one left.
+      // The next run picks up the connection this one left.
       expect(
         await bexio.refreshIdle({ idleFor: "7d", timeBudget: "15s" }),
       ).toEqual({
@@ -890,7 +1104,7 @@ describe.each(backends)("$name store", ({ make }) => {
       });
       const { accessToken } = await bexio.getAccessToken({ ownerId: "ws-1" });
       const [row] = await store.findGrants({ ownerId: "ws-1" });
-      const storedRefresh = row!.refreshToken!;
+      const storedRefresh = row!.connection.refreshToken!;
 
       const listed = JSON.stringify(
         await bexio.listGrants({ ownerId: "ws-1" }),

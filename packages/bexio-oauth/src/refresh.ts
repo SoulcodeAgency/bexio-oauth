@@ -5,7 +5,7 @@ import { BexioOAuthError, isBexioOAuthError } from "./errors.js";
 import { bindingOf, decryptFor, issue, resolveGrant } from "./grants.js";
 import { describe } from "./oidc.js";
 import { fetchRole } from "./permissions.js";
-import type { GrantRecord } from "./store/types.js";
+import type { ConnectionRecord } from "./store/types.js";
 import type { AccessToken, GrantSelector } from "./types.js";
 
 /** Refresh a little before the access token really expires. */
@@ -36,10 +36,10 @@ export function tokenExpiry(
 }
 
 /** True while the access token is valid for longer than the skew. */
-export function isFresh(record: GrantRecord, now: Date): boolean {
+export function isFresh(connection: ConnectionRecord, now: Date): boolean {
   return (
-    record.accessExpiresAt !== null &&
-    record.accessExpiresAt.getTime() - EXPIRY_SKEW_MS > now.getTime()
+    connection.accessExpiresAt !== null &&
+    connection.accessExpiresAt.getTime() - EXPIRY_SKEW_MS > now.getTime()
   );
 }
 
@@ -53,31 +53,36 @@ export function lockWindow(ctx: ClientContext, now: Date) {
 }
 
 /**
- * Refreshes a grant whose lock the caller holds (`lockToken`). Every write
- * is fenced by the token: if the lock was lost (expired and taken over, or
- * the grant was reconnected meanwhile), the write changes nothing and this
- * returns `null`: the caller re-reads the grant.
+ * Refreshes a connection whose lock the caller holds (`lockToken`). Every
+ * write is fenced by the token: if the lock was lost (expired and taken over,
+ * or the connection was reconnected meanwhile), the write changes nothing and
+ * this returns `null`: the caller re-reads the connection.
  */
 export async function refreshLocked(
   ctx: ClientContext,
-  record: GrantRecord,
+  connection: ConnectionRecord,
   lockToken: string,
-): Promise<GrantRecord | null> {
+): Promise<ConnectionRecord | null> {
   const { store, cipher, clock } = ctx;
-  if (!record.refreshToken) {
-    await store.markReauthRequired(record.id, lockToken, clock());
+  if (!connection.refreshToken) {
+    if (!(await store.markReauthRequired(connection.id, lockToken, clock())))
+      return null;
     throw new BexioOAuthError(
       "reauth_required",
-      "grant has no refresh token; reconnect required",
+      "connection has no refresh token; reconnect required",
     );
   }
   let refreshToken: string;
   try {
-    refreshToken = await decryptFor(cipher, record, record.refreshToken);
+    refreshToken = await decryptFor(
+      cipher,
+      connection,
+      connection.refreshToken,
+    );
   } catch (error) {
     // Usually a keyring mistake (a key removed too early): don't burn the
-    // grant, so restoring the key fixes it.
-    await store.releaseRefreshLock(record.id, lockToken);
+    // connection, so restoring the key fixes it.
+    await store.releaseRefreshLock(connection.id, lockToken);
     throw error;
   }
 
@@ -92,14 +97,19 @@ export async function refreshLocked(
       error instanceof oidc.ResponseBodyError &&
       error.error === "invalid_grant"
     ) {
-      await store.markReauthRequired(record.id, lockToken, clock());
+      // A reconnect during the refresh restarts the chain at Bexio, which
+      // rejects this (older) refresh token. If the reconnect's write already
+      // landed, it cleared our lock: nothing is marked and the caller reads
+      // the new tokens. If it lands later, it revives the connection then.
+      if (!(await store.markReauthRequired(connection.id, lockToken, clock())))
+        return null;
       throw new BexioOAuthError(
         "reauth_required",
         "Bexio rejected the refresh token; reconnect required",
         { cause: describe(error) },
       );
     }
-    await store.releaseRefreshLock(record.id, lockToken);
+    await store.releaseRefreshLock(connection.id, lockToken);
     if (isBexioOAuthError(error)) throw error;
     throw new BexioOAuthError("idp_error", "token refresh failed", {
       cause: describe(error),
@@ -107,10 +117,10 @@ export async function refreshLocked(
   }
 
   const now = clock();
-  const binding = bindingOf(record);
+  const binding = bindingOf(connection);
   // null: lock lost while refreshing (someone reconnected, or our lock
   // expired and another caller took over). Their write wins.
-  return store.saveRefreshed(record.id, lockToken, {
+  return store.saveRefreshed(connection.id, lockToken, {
     accessToken: await cipher.encrypt(tokens.access_token, binding),
     refreshToken: tokens.refresh_token
       ? await cipher.encrypt(tokens.refresh_token, binding)
@@ -130,24 +140,25 @@ export async function getAccessToken(
   selector: GrantSelector,
 ): Promise<AccessToken> {
   const { store, clock } = ctx;
-  let record = await resolveGrant(store, selector);
+  const grant = await resolveGrant(store, selector);
+  let connection = grant.connection;
   const deadline = clock().getTime() + ctx.lockTtlMs + WAIT_GRACE_MS;
   let wait = 50;
-  const reread = async (id: string) => {
-    const current = await store.getGrant(id);
+  const reread = async () => {
+    const current = await store.getConnection(connection.id);
     if (!current)
-      throw new BexioOAuthError("not_connected", "grant was deleted");
+      throw new BexioOAuthError("not_connected", "grant was disconnected");
     return current;
   };
   for (;;) {
-    if (record.status === "reauth_required") {
+    if (connection.status === "reauth_required") {
       throw new BexioOAuthError(
         "reauth_required",
         "grant needs to be reconnected",
       );
     }
     const now = clock();
-    if (isFresh(record, now)) return issue(ctx.cipher, record);
+    if (isFresh(connection, now)) return issue(ctx.cipher, grant, connection);
     // Every iteration that would do more work is bounded, whether the last
     // one waited for another refresher or lost its own lock.
     if (now.getTime() > deadline) {
@@ -161,22 +172,23 @@ export async function getAccessToken(
     await ctx.oidc.config();
     const window = lockWindow(ctx, clock());
     const locked = await store.acquireRefreshLock({
-      id: record.id,
+      id: connection.id,
       ...window,
       accessExpiresBefore: new Date(now.getTime() + EXPIRY_SKEW_MS),
     });
     if (locked) {
       const refreshed = await refreshLocked(ctx, locked, window.lockToken);
-      if (refreshed) return issue(ctx.cipher, refreshed);
+      if (refreshed) return issue(ctx.cipher, grant, refreshed);
       // Lost the lock to a reconnect or another refresher: look at their
       // result before anything else (it may be fresh, or reauth_required).
-      record = await reread(record.id);
+      connection = await reread();
       continue;
     }
 
-    // Someone else is refreshing (or just did): wait for their result.
+    // Someone else (possibly for another owner of this connection) is
+    // refreshing, or just did: wait for their result.
     await sleep(wait);
     wait = Math.min(wait * 2, 1_000);
-    record = await reread(record.id);
+    connection = await reread();
   }
 }
