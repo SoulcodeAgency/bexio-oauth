@@ -51,8 +51,6 @@ For a live Bexio account, leave `BEXIO_ISSUER` and `BEXIO_API_BASE_URL` empty in
 
 ## Test scenarios with a live Bexio account
 
-Results are production data: keep them out of PRs, issues and comments.
-
 - Sign in, connect, call the API, force a refresh, disconnect.
 - Two workspaces, same user and company: one shared connection; both survive refreshes and a disconnect of either.
 - Same user, two companies: two connections that refresh independently; revoking either ends both.
