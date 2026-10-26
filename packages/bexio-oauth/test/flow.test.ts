@@ -577,7 +577,7 @@ describe.each(backends)("$name store", ({ make }) => {
       });
     });
 
-    it("falls back to userinfo for company claims when there is no ID token", async () => {
+    it("reads the profile from userinfo when there is no ID token", async () => {
       const bexio = client(mock, store);
       const tokens = await mock.issueTokens({ sub: GRACE }, { idToken: false });
       const userinfo = mock.stats.userinfo;
@@ -591,6 +591,8 @@ describe.each(backends)("$name store", ({ make }) => {
       expect(mock.stats.userinfo).toBe(userinfo + 1);
       expect(grant).toMatchObject({
         companyId: "cmp-alpha",
+        companyName: "Alpha AG",
+        userName: "Grace Hopper",
         userEmail: "grace@example.com",
       });
     });

@@ -78,15 +78,20 @@ describe("mock-bexio", () => {
     expect(jwks.keys[0]).toMatchObject({ kty: "RSA", alg: "RS256" });
   });
 
-  it("issues Bexio-shaped tokens: company claims in the ID token, company_user_id in the access token", async () => {
+  it("issues Bexio-shaped tokens: profile claims in the ID token, only ids in the access token", async () => {
     const tokens = await mock.issueTokens({ companyId: "cmp-beta" });
     expect(decodeJwt(tokens.id_token!)).toMatchObject({
       company_id: "cmp-beta",
       company_name: "Beta GmbH",
     });
     const access = decodeJwt(tokens.access_token);
-    expect(access).toMatchObject({ company_user_id: 7, azp: mock.clientId });
-    expect(access.company_id).toBeUndefined();
+    expect(access).toMatchObject({
+      company_id: "cmp-beta",
+      company_user_id: 7,
+      azp: mock.clientId,
+    });
+    for (const claim of ["company_name", "email", "given_name", "name"])
+      expect(access[claim]).toBeUndefined();
   });
 
   it("rotates refresh tokens and kills the session on reuse", async () => {

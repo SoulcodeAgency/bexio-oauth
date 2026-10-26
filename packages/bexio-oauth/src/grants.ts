@@ -94,16 +94,23 @@ export function decodeIfJwt(token: string): ClaimBag {
   }
 }
 
+/** Claims a connection needs beyond the ids (see `mapClaims`). */
+const PROFILE_CLAIMS = ["company_id", "company_name", "email"];
+
 /**
- * Adds userinfo claims, only when the tokens lack the company claims. Token
- * claims win over userinfo; a userinfo failure keeps the token claims.
+ * Adds userinfo claims when the tokens lack the profile claims. Bexio's access
+ * token carries `company_id` but no company name, email or person name; the
+ * ID token has them, so the extra call only happens without one (`saveGrant`
+ * with an access token alone). Token claims win over userinfo; a userinfo
+ * failure keeps the token claims.
  */
 export async function withUserInfo(
   ctx: ClientContext,
   claims: ClaimBag,
   accessToken: string,
 ): Promise<ClaimBag> {
-  if (claims.company_id !== undefined) return claims;
+  if (PROFILE_CLAIMS.every((claim) => claims[claim] !== undefined))
+    return claims;
   try {
     const info = await oidc.fetchUserInfo(
       await ctx.oidc.config(),
