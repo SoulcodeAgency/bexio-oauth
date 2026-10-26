@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 
 /**
  * Seconds until the connection counts as idle for the refreshIdle cron
- * (last refresh + BEXIO_IDLE_FOR), so a tester knows when calling it refreshes.
+ * (last refresh + BEXIO_IDLE_FOR), so a tester knows when running it refreshes.
  */
 export function IdleCountdown({ idleAt }: { idleAt: string }) {
   // Rendered on the client only: server and browser clocks would differ.
@@ -19,10 +19,13 @@ export function IdleCountdown({ idleAt }: { idleAt: string }) {
   }, [idleAt]);
   if (seconds === null) return null;
   return (
-    <small data-testid="idle-countdown">
-      {seconds > 0
-        ? ` · idle for the cron in ${seconds}s`
-        : " · idle: the cron refreshes it"}
-    </small>
+    <span
+      className="chip"
+      data-testid="idle-countdown"
+      data-idle={seconds === 0}
+      title="When refreshIdle picks this connection up"
+    >
+      {seconds > 0 ? `idle in ${seconds}s` : "idle"}
+    </span>
   );
 }

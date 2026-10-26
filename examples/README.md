@@ -20,7 +20,7 @@ npm run migrate && npm run dev               # http://localhost:3400
 
 The Supabase example needs Docker: `npm run db:start` in `examples/supabase` starts the local stack and applies `supabase/migrations/` (generated with `npx @soulcode/bexio-oauth sql`, plus `ENABLE ROW LEVEL SECURITY` on both tables).
 
-`npm run test:e2e` in either app starts the mock and the app itself (Playwright `webServer`). If a dev server already holds the Better Auth ports, run it with `E2E_APP_PORT=3410 E2E_MOCK_PORT=9411`.
+`npm run test:e2e` in either app starts the mock and the app itself (Playwright `webServer`). If a dev server already holds the ports, set `E2E_APP_PORT` and `E2E_MOCK_PORT` (e.g. 3410 and 9411).
 
 For a live Bexio account, leave `BEXIO_ISSUER` and `BEXIO_API_BASE_URL` empty in `.env.local`.
 

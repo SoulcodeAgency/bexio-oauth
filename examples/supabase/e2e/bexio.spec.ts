@@ -1,7 +1,13 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
 import pg from "pg";
 import { e2eEnv } from "../playwright.config";
+
+/** The sample API call succeeded, and Bexio answered for this company. */
+async function expectApiOk(result: Locator, company: string) {
+  await expect(result).toHaveText("API OK");
+  await expect(result).toHaveAttribute("data-company", company);
+}
 
 const db = new pg.Pool({ connectionString: e2eEnv.DATABASE_URL });
 
@@ -29,9 +35,7 @@ test("connect Bexio for a Supabase user; RLS keeps the token tables unreadable f
   });
   await page.getByTestId("connect").click();
   await expect(page.getByTestId("grant")).toContainText("Alpha AG");
-  await expect(page.getByTestId("api-result")).toHaveText(
-    "API call OK: Alpha AG",
-  );
+  await expectApiOk(page.getByTestId("api-result"), "Alpha AG");
 
   // The grant exists (server-side connection)…
   const anon = createClient(

@@ -3,8 +3,14 @@ import { disconnect } from "@/app/actions";
 import { getBexio } from "@/lib/bexio";
 import { optionalEnv } from "@/lib/env";
 
+type ApiCheck =
+  | { state: "ok"; label: string; company: string }
+  | { state: "reconnect" | "error"; label: string };
+
 /** A sample API call with the grant's token, to show it works. */
-async function companyName(grant: Grant): Promise<string> {
+async function checkApi(grant: Grant): Promise<ApiCheck> {
+  if (grant.status !== "active")
+    return { state: "reconnect", label: "Reconnect required" };
   try {
     const { accessToken } = await getBexio().getAccessToken({
       ownerId: grant.ownerId,
@@ -18,36 +24,67 @@ async function companyName(grant: Grant): Promise<string> {
       },
       cache: "no-store",
     });
-    if (!res.ok) return `API call failed: HTTP ${res.status}`;
+    if (!res.ok) return { state: "error", label: `API error ${res.status}` };
     const [profile] = (await res.json()) as { name: string }[];
-    return `API call OK: ${profile?.name}`;
+    return { state: "ok", label: "API OK", company: profile?.name ?? "" };
   } catch (error) {
     if (isBexioOAuthError(error, "reauth_required"))
-      return "Reconnect required";
+      return { state: "reconnect", label: "Reconnect required" };
     throw error;
   }
 }
 
 export async function Grants({ ownerId }: { ownerId: string }) {
   const grants = await getBexio().listGrants({ ownerId });
-  if (grants.length === 0) return <p data-testid="grants">Not connected.</p>;
+  if (grants.length === 0)
+    return (
+      <p className="empty" data-testid="grants">
+        Not connected.
+      </p>
+    );
   return (
-    <ul data-testid="grants">
+    <ul className="grants" data-testid="grants">
       {await Promise.all(
-        grants.map(async (g) => (
-          <li key={g.id} data-testid="grant" data-status={g.status}>
-            <strong>{g.companyName}</strong> ({g.role}) · {g.userName} ·{" "}
-            <span data-testid="api-result">
-              {g.status === "active"
-                ? await companyName(g)
-                : "Reconnect required"}
-            </span>{" "}
-            <form action={disconnect} style={{ display: "inline" }}>
-              <input type="hidden" name="grantId" value={g.id} />
-              <button data-testid="disconnect">Disconnect</button>
-            </form>
-          </li>
-        )),
+        grants.map(async (g) => {
+          const api = await checkApi(g);
+          return (
+            <li
+              key={g.id}
+              className="grant"
+              data-testid="grant"
+              data-status={g.status}
+              data-state={api.state}
+            >
+              <div className="grant-main">
+                <div className="who">
+                  <strong>{g.companyName}</strong>
+                  <span className="role">{g.role}</span>
+                  <small>{g.userName}</small>
+                </div>
+                <span
+                  className="pill"
+                  data-testid="api-result"
+                  data-company={api.state === "ok" ? api.company : undefined}
+                >
+                  {api.label}
+                </span>
+                {api.state === "reconnect" && (
+                  <a
+                    className="button primary"
+                    data-testid="reconnect"
+                    href="/api/bexio/connect"
+                  >
+                    Reconnect
+                  </a>
+                )}
+                <form action={disconnect}>
+                  <input type="hidden" name="grantId" value={g.id} />
+                  <button data-testid="disconnect">Disconnect</button>
+                </form>
+              </div>
+            </li>
+          );
+        }),
       )}
     </ul>
   );

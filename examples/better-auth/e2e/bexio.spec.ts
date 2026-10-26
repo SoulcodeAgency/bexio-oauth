@@ -1,6 +1,12 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import pg from "pg";
 import { e2eEnv } from "../playwright.config";
+
+/** The sample API call succeeded, and Bexio answered for this company. */
+async function expectApiOk(result: Locator, company: string) {
+  await expect(result).toHaveText("API OK");
+  await expect(result).toHaveAttribute("data-company", company);
+}
 
 const ADA = "8f1c2a8e-0001-4000-8000-000000000001";
 const GRACE = "8f1c2a8e-0002-4000-8000-000000000002";
@@ -68,10 +74,8 @@ test("sign in with Bexio: the grant is saved, Better Auth keeps no tokens, disco
   );
   const own = page.getByTestId(/^grants-(?!workspace)/);
   await expect(own.getByTestId("grant")).toContainText("Alpha AG");
-  await expect(own.getByTestId("grant")).toContainText("(admin)");
-  await expect(own.getByTestId("api-result")).toHaveText(
-    "API call OK: Alpha AG",
-  );
+  await expect(own.getByTestId("grant")).toContainText("admin");
+  await expectApiOk(own.getByTestId("api-result"), "Alpha AG");
 
   const { rows: accounts } = await db.query(
     `SELECT "accessToken", "refreshToken", "idToken" FROM "account" WHERE "providerId" = 'bexio'`,
@@ -99,10 +103,8 @@ test("connect Bexio for a workspace, use it from a background job, keep it alive
   await signIn(page);
   await connectWorkspace(page, "a", GRACE, "cmp-alpha");
   const ws = page.getByTestId("workspace-a");
-  await expect(ws.getByTestId("grant")).toContainText("(member)");
-  await expect(ws.getByTestId("api-result")).toHaveText(
-    "API call OK: Alpha AG",
-  );
+  await expect(ws.getByTestId("grant")).toContainText("member");
+  await expectApiOk(ws.getByTestId("api-result"), "Alpha AG");
 
   // No session: the job only knows the owner id.
   const job = await request.get("/api/jobs/sync?owner=workspace:a", {
@@ -133,7 +135,7 @@ test("connect Bexio for a workspace, use it from a background job, keep it alive
   await page.waitForTimeout(1_500);
   await page.getByTestId("run-refresh-idle").click();
   await expect(page.getByTestId("refresh-idle-result")).toContainText(
-    '"refreshed":2',
+    "2 refreshed",
   );
   expect((await lastRefreshed()).getTime()).toBeGreaterThan(
     afterCron.getTime(),
@@ -196,8 +198,8 @@ test("two workspaces connect the same Bexio user and company; both keep working 
     failed: 0,
   });
   await page.reload();
-  await expect(apiResult("a")).toHaveText("API call OK: Beta GmbH");
-  await expect(apiResult("b")).toHaveText("API call OK: Beta GmbH");
+  await expectApiOk(apiResult("a"), "Beta GmbH");
+  await expectApiOk(apiResult("b"), "Beta GmbH");
 
   // Disconnecting a revokes nothing at Bexio: b still uses the chain.
   const { revocations } = await mockStats();
@@ -212,7 +214,7 @@ test("two workspaces connect the same Bexio user and company; both keep working 
     failed: 0,
   });
   await page.reload();
-  await expect(apiResult("b")).toHaveText("API call OK: Beta GmbH");
+  await expectApiOk(apiResult("b"), "Beta GmbH");
 });
 
 test("a revoked Bexio session shows 'reconnect required', and reconnecting restores the grant", async ({
@@ -244,9 +246,7 @@ test("a revoked Bexio session shows 'reconnect required', and reconnecting resto
     "data-status",
     "active",
   );
-  await expect(ws.getByTestId("api-result")).toHaveText(
-    "API call OK: Alpha AG",
-  );
+  await expectApiOk(ws.getByTestId("api-result"), "Alpha AG");
 });
 
 test("test tools: revoking a saved, stale token ends the current chain", async ({
@@ -261,9 +261,7 @@ test("test tools: revoking a saved, stale token ends the current chain", async (
   // Reconnecting makes the saved refresh token stale.
   await nextLogin({ sub: ADA, companyId: "cmp-beta" });
   await page.getByTestId("connect-a").click();
-  await expect(ws.getByTestId("api-result")).toHaveText(
-    "API call OK: Beta GmbH",
-  );
+  await expectApiOk(ws.getByTestId("api-result"), "Beta GmbH");
 
   const { revocations } = await mockStats();
   await ws.getByTestId("tool-revoke-saved").click();
@@ -285,9 +283,7 @@ test("test tools: revoking a saved, stale token ends the current chain", async (
   // Reconnect right from the grant.
   await nextLogin({ sub: ADA, companyId: "cmp-beta" });
   await ws.getByTestId("reconnect").click();
-  await expect(ws.getByTestId("api-result")).toHaveText(
-    "API call OK: Beta GmbH",
-  );
+  await expectApiOk(ws.getByTestId("api-result"), "Beta GmbH");
 });
 
 test("a cancelled connect returns with the error code and saves nothing", async ({

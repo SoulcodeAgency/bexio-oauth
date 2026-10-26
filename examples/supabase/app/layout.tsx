@@ -1,20 +1,12 @@
 import type { ReactNode } from "react";
+import "./globals.css";
 
 export const metadata = { title: "bexio-oauth · Supabase example" };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      <body
-        style={{
-          fontFamily: "system-ui, sans-serif",
-          maxWidth: 720,
-          margin: "2rem auto",
-          padding: "0 1rem",
-        }}
-      >
-        {children}
-      </body>
+      <body>{children}</body>
     </html>
   );
 }
