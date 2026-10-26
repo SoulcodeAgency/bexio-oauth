@@ -2,7 +2,9 @@ import { isBexioOAuthError, type Grant } from "@soulcode/bexio-oauth";
 import { disconnect, testTool } from "@/app/actions";
 import { getBexio } from "@/lib/bexio";
 import { optionalEnv } from "@/lib/env";
+import { idleForMs } from "@/lib/cron";
 import { hasSavedToken, testToolsEnabled } from "@/lib/test-tools";
+import { IdleCountdown } from "./idle-countdown";
 
 /** A sample API call with the grant's token, to show it works. */
 async function companyName(grant: Grant): Promise<string> {
@@ -49,6 +51,13 @@ function TestTools({ ownerId, grant }: { ownerId: string; grant: Grant }) {
           <button data-testid={`tool-${tool}`}>{label}</button>
         </form>
       ))}
+      {grant.status === "active" && (
+        <IdleCountdown
+          idleAt={new Date(
+            grant.lastRefreshedAt.getTime() + idleForMs(),
+          ).toISOString()}
+        />
+      )}
     </div>
   );
 }

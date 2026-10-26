@@ -126,7 +126,18 @@ test("connect Bexio for a workspace, use it from a background job, keep it alive
   const sweep = await request.get("/api/cron/refresh-idle", { headers: cron });
   expect(await sweep.json()).toMatchObject({ reauthRequired: 0, failed: 0 });
   // The workspace grant itself was refreshed, not just the user's own one.
-  expect((await lastRefreshed()).getTime()).toBeGreaterThan(before.getTime());
+  const afterCron = await lastRefreshed();
+  expect(afterCron.getTime()).toBeGreaterThan(before.getTime());
+
+  // The page's test tool runs the same refresh.
+  await page.waitForTimeout(1_500);
+  await page.getByTestId("run-refresh-idle").click();
+  await expect(page.getByTestId("refresh-idle-result")).toContainText(
+    '"refreshed":2',
+  );
+  expect((await lastRefreshed()).getTime()).toBeGreaterThan(
+    afterCron.getTime(),
+  );
 });
 
 test("signing in again replaces the tokens: still one grant, Better Auth's copy cleared again", async ({
