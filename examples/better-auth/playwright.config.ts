@@ -23,6 +23,7 @@ const env = {
   }),
   CRON_SECRET: "e2e-cron-secret",
   BEXIO_IDLE_FOR: "1s",
+  BEXIO_TEST_TOOLS: "on",
   AUTH_RATE_LIMIT: "off",
 };
 

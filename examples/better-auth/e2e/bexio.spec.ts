@@ -238,6 +238,34 @@ test("a revoked Bexio session shows 'reconnect required', and reconnecting resto
   );
 });
 
+test("test tools: revoking a saved, stale token ends the current chain", async ({
+  page,
+}) => {
+  await signIn(page, GRACE);
+  await connectWorkspace(page, "a", ADA, "cmp-beta");
+  const ws = page.getByTestId("workspace-a");
+  await ws.getByTestId("tool-save").click();
+  await expect(ws.getByTestId("tool-revoke-saved")).toBeVisible();
+
+  // Reconnecting makes the saved refresh token stale.
+  await nextLogin({ sub: ADA, companyId: "cmp-beta" });
+  await page.getByTestId("connect-a").click();
+  await expect(ws.getByTestId("api-result")).toHaveText(
+    "API call OK: Beta GmbH",
+  );
+
+  const { revocations } = await mockStats();
+  await ws.getByTestId("tool-revoke-saved").click();
+  await expect(ws.getByTestId("tool-revoke-saved")).toHaveCount(0);
+  await expect
+    .poll(async () => (await mockStats()).revocations)
+    .toBe(revocations + 1);
+  // Force a refresh: the revocation ended the current chain too.
+  await ws.getByTestId("tool-expire").click();
+  await page.reload();
+  await expect(ws.getByTestId("api-result")).toHaveText("Reconnect required");
+});
+
 test("a cancelled connect returns with the error code and saves nothing", async ({
   page,
 }) => {
