@@ -39,14 +39,16 @@ export const bexio = createBexioOAuth({
 ```
 
 ```ts
-// GET /api/bexio/connect
+// app/api/bexio/connect/route.ts
 export const GET = async (req: Request) =>
   bexio.start({
     ownerId: await currentWorkspaceId(req),
     returnTo: "/settings",
   });
+```
 
-// GET /api/bexio/callback  (your redirectUri)
+```ts
+// app/api/bexio/callback/route.ts  (your redirectUri)
 export const GET = async (req: Request) =>
   bexio.callback(req, { ownerId: await currentWorkspaceId(req) });
 ```
