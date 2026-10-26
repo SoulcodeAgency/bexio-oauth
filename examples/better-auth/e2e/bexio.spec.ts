@@ -138,7 +138,12 @@ test("signing in again replaces the tokens: still one grant, Better Auth's copy 
   const { rows: first } = await db.query<Row>(
     "SELECT g.id, c.access_token FROM bexio_grants g JOIN bexio_connections c ON c.id = g.connection_id",
   );
+  // A user saved without a name gets it from Bexio on the next sign-in.
+  await db.query(`UPDATE "user" SET name = ''`);
   await signIn(page);
+  await expect(page.getByRole("heading", { level: 1 })).toContainText(
+    "Hello Ada Lovelace",
+  );
   const { rows: second } = await db.query<Row>(
     "SELECT g.id, c.access_token FROM bexio_grants g JOIN bexio_connections c ON c.id = g.connection_id",
   );

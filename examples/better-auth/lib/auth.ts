@@ -28,6 +28,9 @@ function buildAuth() {
             ],
             pkce: true,
             // Bexio sends given_name and family_name, but no name claim.
+            // overrideUserInfo applies the mapping on every sign-in, not
+            // only at sign-up, so names changed at Bexio follow too.
+            overrideUserInfo: true,
             mapProfileToUser: (profile) => {
               const name = [profile.given_name, profile.family_name]
                 .filter((part) => typeof part === "string" && part)

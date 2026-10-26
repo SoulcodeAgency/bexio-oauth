@@ -25,7 +25,7 @@ The Supabase example needs Docker: `npm run db:start` in `examples/supabase` sta
 ## Better Auth
 
 - **Give the app its own Bexio OAuth client.** Better Auth's sign-in and the library's Connect flow both authorize with it, and Bexio keeps one token chain per user and client: an app that shares the client id with another app invalidates that app's grants for the same user ([integration guide §2](../docs/integration.md#why-owners-of-the-same-identity-share-a-connection)).
-- **The display name is mapped.** Bexio sends `given_name` and `family_name` but no `name`, so `mapProfileToUser` in [`lib/auth.ts`](better-auth/lib/auth.ts) builds Better Auth's `name` from them.
+- **The display name is mapped.** Bexio sends `given_name` and `family_name` but no `name`, so `mapProfileToUser` in [`lib/auth.ts`](better-auth/lib/auth.ts) builds Better Auth's `name` from them, with `overrideUserInfo` so it applies on every sign-in, not only at sign-up.
 - **Don't copy `AUTH_RATE_LIMIT=off` to production.** The e2e suite turns Better Auth's sign-in rate limiting off because it signs in many times in a row. Leave the variable unset in real deployments; rate limiting then stays on.
 
 ## Supabase
