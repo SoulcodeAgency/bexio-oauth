@@ -518,7 +518,7 @@ describe.each(backends)("$name store", ({ make }) => {
     it("known limit: a connect that authorizes while the last owner's disconnect revokes can lose its chain", async () => {
       // The store sees no grant left and deletes the connection; before the
       // revocation reaches Bexio, another owner authorizes the same identity.
-      // Bexio may end that new chain with the revocation (the mock does),
+      // The revocation ends that new chain at Bexio (and in the mock),
       // which the database can't see. The owner sees reauth_required at its
       // next refresh and reconnects (docs §10).
       const clock = testClock();

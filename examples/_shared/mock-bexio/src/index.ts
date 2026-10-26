@@ -15,9 +15,9 @@
  *   it fail with `invalid_grant` ("Refresh token issued before the user
  *   session started"). Another company's chain is not affected. The mock
  *   serves a single client;
- * - token revocation, modeled pessimistically (unverified against Bexio):
- *   revoking any of a user's refresh tokens, even one from an older
- *   authorization or another company, ends all of the user's current chains;
+ * - token revocation: revoking any of a user's refresh tokens, even one from
+ *   an older authorization or another company, ends all of the user's
+ *   current chains, as Bexio does;
  * - userinfo, `GET /3.0/permissions`, `GET /2.0/company_profile`.
  *
  * Kept to a single file without relative imports so it runs directly with

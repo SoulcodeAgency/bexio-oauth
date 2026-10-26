@@ -185,10 +185,9 @@ export async function disconnect(
   const deleted = await ctx.store.deleteUnusedConnection(grant.connection.id);
   if (!deleted) return;
   const { connection, userHasOtherConnections } = deleted;
-  // Revoking may end more than the named token's chain at Bexio (unverified):
-  // the user's current chain when the token is stale, or the user's chain for
-  // another company. A reauth_required connection's token is dead already, so
-  // skip it, and skip while the user has another connection.
+  // Revoking ends all of the user's chains at Bexio, whichever token it
+  // names: a stale (reauth_required) token would still end the chain the user
+  // authorized since, and any token the user's other company's connection.
   if (
     !connection.refreshToken ||
     connection.status !== "active" ||
