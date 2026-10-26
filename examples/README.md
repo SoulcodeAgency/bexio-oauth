@@ -40,12 +40,12 @@ The Supabase example needs Docker: `npm run db:start` in `examples/supabase` sta
 
 ## Redirect URIs to register at Bexio
 
-| URI                                             | Used by                                                                                                                                                    |
-| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `http://localhost:3400/api/auth/callback/bexio` | Better Auth sign-in (`genericOAuth`, Better Auth 1.7 route)                                                                                                |
-| `http://localhost:3400/api/bexio/callback`      | Connect Bexio, Better Auth app                                                                                                                             |
-| `http://localhost:3300/api/bexio/callback`      | Connect Bexio, Supabase app                                                                                                                                |
-| `http://127.0.0.1:55621/auth/v1/callback`         | Supabase Auth custom provider (Sign in with Bexio) |
+| URI                                             | Used by                                                     |
+| ----------------------------------------------- | ----------------------------------------------------------- |
+| `http://localhost:3400/api/auth/callback/bexio` | Better Auth sign-in (`genericOAuth`, Better Auth 1.7 route) |
+| `http://localhost:3400/api/bexio/callback`      | Connect Bexio, Better Auth app                              |
+| `http://localhost:3300/api/bexio/callback`      | Connect Bexio, Supabase app                                 |
+| `http://127.0.0.1:55621/auth/v1/callback`       | Supabase Auth custom provider (Sign in with Bexio)          |
 
 ## Manual live-Bexio checklist
 
