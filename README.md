@@ -1,6 +1,6 @@
 # bexio-oauth
 
-[![npm version](https://img.shields.io/npm/v/@soulcode/bexio-oauth?logo=npm&color=cb3837)](https://www.npmjs.com/package/@soulcode/bexio-oauth)
+[![npm version](https://img.shields.io/npm/v/@soulcode/bexio-oauth?logo=npm&color=A020F0)](https://www.npmjs.com/package/@soulcode/bexio-oauth)
 [![CI](https://img.shields.io/github/actions/workflow/status/SoulcodeAgency/bexio-oauth/ci.yml?branch=main&logo=github&label=CI)](https://github.com/SoulcodeAgency/bexio-oauth/actions/workflows/ci.yml)
 [![CodeQL](https://img.shields.io/github/actions/workflow/status/SoulcodeAgency/bexio-oauth/codeql.yml?branch=main&logo=github&label=CodeQL)](https://github.com/SoulcodeAgency/bexio-oauth/actions/workflows/codeql.yml)
 [![Node](https://img.shields.io/node/v/@soulcode/bexio-oauth?logo=nodedotjs&logoColor=white&color=5fa04e)](https://nodejs.org)
