@@ -51,7 +51,7 @@ The Supabase example needs Docker: `npm run db:start` in `examples/supabase` sta
 
 ## Manual live-Bexio checklist
 
-Run once per release candidate, in both apps, with a real Bexio OAuth app (`.env.local` without `BEXIO_ISSUER` / `BEXIO_API_BASE_URL`). Record the results in the release PR.
+Run once per release candidate, in both apps, with a real Bexio OAuth app (`.env.local` without `BEXIO_ISSUER` / `BEXIO_API_BASE_URL`). The account is real, so the results are production data: keep them out of PRs, issues and comments (the repo is public). In the release PR, state only that the checklist passed, or which item failed and why, without names, companies, emails, ids or tokens.
 
 - [ ] Sign in with Bexio (Better Auth) / Connect Bexio (both): the grant shows the right company and role.
 - [ ] The sample API call succeeds.
