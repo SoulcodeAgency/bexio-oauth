@@ -261,9 +261,15 @@ test("test tools: revoking a saved, stale token ends the current chain", async (
     .poll(async () => (await mockStats()).revocations)
     .toBe(revocations + 1);
   // Force a refresh: the revocation ended the current chain too.
+  // The action re-renders the page, which refreshes; wait for that render
+  // rather than reloading, which could beat the action.
   await ws.getByTestId("tool-expire").click();
-  await page.reload();
   await expect(ws.getByTestId("api-result")).toHaveText("Reconnect required");
+  await page.reload();
+  await expect(ws.getByTestId("grant")).toHaveAttribute(
+    "data-status",
+    "reauth_required",
+  );
 });
 
 test("a cancelled connect returns with the error code and saves nothing", async ({
