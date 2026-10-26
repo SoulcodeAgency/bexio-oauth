@@ -14,51 +14,68 @@ export default async function Home({
   if (!user) {
     return (
       <main>
-        <h1>Supabase Auth + bexio-oauth</h1>
-        {auth_error && <p data-testid="auth-error">Auth error: {auth_error}</p>}
-        <form action={signUpOrIn}>
-          <input
-            name="email"
-            type="email"
-            placeholder="email"
-            required
-            data-testid="email"
-          />
-          <input
-            name="password"
-            type="password"
-            placeholder="password"
-            required
-            data-testid="password"
-          />
-          <button data-testid="sign-in">Sign up / sign in</button>
-        </form>
-        {process.env.BEXIO_SUPABASE_PROVIDER && (
-          <form action={signInWithBexio}>
-            <button data-testid="sign-in-bexio">Sign in with Bexio</button>
+        <div className="signin">
+          <h1>Supabase Auth + bexio-oauth</h1>
+          {auth_error && (
+            <p className="notice" data-testid="auth-error">
+              {auth_error}
+            </p>
+          )}
+          <form action={signUpOrIn}>
+            <input
+              name="email"
+              type="email"
+              placeholder="Email"
+              required
+              data-testid="email"
+            />
+            <input
+              name="password"
+              type="password"
+              placeholder="Password"
+              required
+              data-testid="password"
+            />
+            <button className="primary" data-testid="sign-in">
+              Sign in or sign up
+            </button>
           </form>
-        )}
+          {process.env.BEXIO_SUPABASE_PROVIDER && (
+            <form action={signInWithBexio}>
+              <button data-testid="sign-in-bexio">Sign in with Bexio</button>
+            </form>
+          )}
+        </div>
       </main>
     );
   }
   return (
     <main>
-      <h1>
-        Hello {user.email}{" "}
-        <form action={signOut} style={{ display: "inline" }}>
+      <header className="top">
+        <h1>Hello {user.email}</h1>
+        <form action={signOut}>
           <button data-testid="sign-out">Sign out</button>
         </form>
-      </h1>
+      </header>
       {bexio_error && (
-        <p data-testid="bexio-error">Bexio error: {bexio_error}</p>
+        <p className="notice" data-testid="bexio-error">
+          Bexio error: {bexio_error}
+        </p>
       )}
-      <h2>
-        Your Bexio connection{" "}
-        <a data-testid="connect" href="/api/bexio/connect">
+
+      <div className="section-head">
+        <h2>Your Bexio</h2>
+        <a
+          className="button primary"
+          data-testid="connect"
+          href="/api/bexio/connect"
+        >
           Connect Bexio
         </a>
-      </h2>
-      <Grants ownerId={user.id} />
+      </div>
+      <section className="owner">
+        <Grants ownerId={user.id} />
+      </section>
     </main>
   );
 }

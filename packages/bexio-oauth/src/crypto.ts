@@ -18,6 +18,9 @@ const JWE_ALGORITHMS = {
   contentEncryptionAlgorithms: ["A256GCM"],
 };
 
+/** 32 bytes as unpadded base64url: exactly 43 characters of the base64url alphabet. */
+const KEY_FORMAT = /^[A-Za-z0-9_-]{43}$/;
+
 /** A new random key for the keyring, base64url-encoded. */
 export function generateKey(): string {
   return randomBytes(32).toString("base64url");
@@ -29,8 +32,8 @@ function hash(value: string): string {
 
 /**
  * Encrypts tokens at rest as compact JWE (`dir` + `A256GCM`) and seals the
- * short-lived flow cookie. The `bxg` protected header binds a token to the
- * grant it belongs to, so ciphertext copied to another row fails to decrypt.
+ * short-lived flow cookie. The `bxc` protected header binds a token to the
+ * connection it belongs to, so ciphertext copied to another row fails to decrypt.
  */
 export class TokenCipher {
   readonly #current: string;
@@ -46,14 +49,16 @@ export class TokenCipher {
     }
     this.#keys = new Map();
     for (const [kid, encoded] of Object.entries(keyring.keys)) {
-      const bytes = Buffer.from(encoded, "base64url");
-      if (bytes.length !== 32) {
+      // Strict: Buffer.from(…, "base64url") silently drops characters it
+      // doesn't know, so a mangled key could still "decode" to 32 bytes and
+      // then differ between environments.
+      if (typeof encoded !== "string" || !KEY_FORMAT.test(encoded)) {
         throw new BexioOAuthError(
           "invalid_config",
-          `key "${kid}" must be 32 bytes, base64url-encoded`,
+          `key "${kid}" must be 32 bytes, base64url-encoded without padding (43 characters)`,
         );
       }
-      this.#keys.set(kid, new Uint8Array(bytes));
+      this.#keys.set(kid, new Uint8Array(Buffer.from(encoded, "base64url")));
     }
     if (!this.#keys.has(keyring.current)) {
       throw new BexioOAuthError(
@@ -70,26 +75,26 @@ export class TokenCipher {
         alg: "dir",
         enc: "A256GCM",
         kid: this.#current,
-        bxg: hash(binding),
+        bxc: hash(binding),
       })
-      .encrypt(this.#key(this.#current));
+      .encrypt(this.#key(this.#current).key);
   }
 
   async decrypt(jwe: string, binding: string): Promise<string> {
     try {
       const { plaintext, protectedHeader } = await compactDecrypt(
         jwe,
-        (header: CompactJWEHeaderParameters) => this.#key(header.kid),
+        (header: CompactJWEHeaderParameters) => this.#key(header.kid).key,
         JWE_ALGORITHMS,
       );
-      if (protectedHeader.bxg !== hash(binding)) {
+      if (protectedHeader.bxc !== hash(binding)) {
         throw new Error("binding mismatch");
       }
       return new TextDecoder().decode(plaintext);
     } catch {
       throw new BexioOAuthError(
         "decryption_failed",
-        "stored token could not be decrypted (unknown key id, or it belongs to another grant)",
+        "stored token could not be decrypted (unknown key id, or it belongs to another connection)",
       );
     }
   }
@@ -124,16 +129,17 @@ export class TokenCipher {
     }
   }
 
-  #key(kid: string | undefined): Uint8Array {
+  /** The key for `kid`, with `kid` narrowed to a known key id. */
+  #key(kid: string | undefined): { kid: string; key: Uint8Array } {
     const key = kid === undefined ? undefined : this.#keys.get(kid);
-    if (!key) throw new Error("unknown key id");
-    return key;
+    if (kid === undefined || !key) throw new Error("unknown key id");
+    return { kid, key };
   }
 
   // The flow cookie uses a key derived from the keyring, never the token key itself.
-  #flowKey(kid: string | undefined): Uint8Array {
-    const base = this.#key(kid);
-    let derived = this.#flowKeys.get(kid!);
+  #flowKey(requested: string | undefined): Uint8Array {
+    const { kid, key: base } = this.#key(requested);
+    let derived = this.#flowKeys.get(kid);
     if (!derived) {
       derived = new Uint8Array(
         hkdfSync(
@@ -144,7 +150,7 @@ export class TokenCipher {
           32,
         ),
       );
-      this.#flowKeys.set(kid!, derived);
+      this.#flowKeys.set(kid, derived);
     }
     return derived;
   }

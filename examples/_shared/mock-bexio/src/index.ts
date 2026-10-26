@@ -4,11 +4,21 @@
  *
  * Behaves like the real thing where it matters:
  * - authorization code flow with PKCE (S256), state, nonce, `iss` in the response;
- * - RS256-signed ID and access tokens with Bexio's claim split (company claims
- *   in the ID token and userinfo, `company_user_id`/`login_id` in the access token);
+ * - RS256-signed ID and access tokens with Bexio's claim split: the access
+ *   token carries `company_id`, `company_user_id` and `login_id` but no
+ *   company name, email or person name; the ID token and userinfo carry the
+ *   profile (`given_name`/`family_name` but no `name`);
  * - rotating refresh tokens; reusing one revokes the whole session (Keycloak's
  *   refresh-token reuse detection);
- * - token revocation, userinfo, `GET /3.0/permissions`, `GET /2.0/company_profile`.
+ * - one token chain per user, company and client: every new authorization of
+ *   a user and company starts a new session, and refresh tokens issued before
+ *   it fail with `invalid_grant` ("Refresh token issued before the user
+ *   session started"). Another company's chain is not affected. The mock
+ *   serves a single client;
+ * - token revocation: revoking any of a user's refresh tokens, even one from
+ *   an older authorization or another company, ends all of the user's
+ *   current chains, as Bexio does;
+ * - userinfo, `GET /3.0/permissions`, `GET /2.0/company_profile`.
  *
  * Kept to a single file without relative imports so it runs directly with
  * Node's type stripping and type-checks from any importing project.
@@ -144,6 +154,21 @@ export const DEFAULT_USERS: MockUser[] = [
       },
     ],
   },
+  {
+    sub: "8f1c2a8e-0003-4000-8000-000000000003",
+    email: "katherine@example.com",
+    givenName: "Katherine",
+    familyName: "Johnson",
+    loginId: "login-katherine",
+    companies: [
+      {
+        companyId: "cmp-beta",
+        companyName: "Beta GmbH",
+        companyUserId: 3,
+        admin: true,
+      },
+    ],
+  },
 ];
 
 interface Session {
@@ -189,6 +214,8 @@ export async function startMockBexio(
   const codes = new Map<string, Code>();
   const refreshTokens = new Map<string, { session: Session; used: boolean }>();
   const sessions = new Map<string, Session>();
+  /** The session each user's latest authorization for a company started. */
+  const currentSessions = new Map<string, Session>();
   const stats: MockStats = {
     authorizationCodeGrants: 0,
     refreshTokenGrants: 0,
@@ -246,6 +273,7 @@ export async function startMockBexio(
           typ: "Bearer",
           sid: session.sid,
           scope: session.scope,
+          company_id: company.companyId,
           company_user_id: company.companyUserId,
           login_id: user.loginId ?? user.sub,
         },
@@ -278,7 +306,6 @@ export async function startMockBexio(
     return {
       email: user.email,
       email_verified: true,
-      name: `${user.givenName} ${user.familyName}`,
       given_name: user.givenName,
       family_name: user.familyName,
       preferred_username: user.email,
@@ -323,6 +350,15 @@ export async function startMockBexio(
 
   function revokeSession(session: Session) {
     session.revoked = true;
+  }
+
+  const chainOf = (session: Session) =>
+    `${session.sub}\u0000${session.companyId}`;
+
+  /** A new authorization: earlier refresh tokens of the user and company stop working. */
+  function startSession(session: Session) {
+    sessions.set(session.sid, session);
+    currentSessions.set(chainOf(session), session);
   }
 
   const send = (
@@ -436,7 +472,6 @@ export async function startMockBexio(
           scope: q.get("scope") ?? "openid",
           revoked: false,
         };
-        sessions.set(session.sid, session);
         const code = random();
         codes.set(code, {
           session,
@@ -478,6 +513,7 @@ export async function startMockBexio(
           );
         }
         stats.authorizationCodeGrants++;
+        startSession(code.session);
         return send(
           res,
           200,
@@ -489,6 +525,15 @@ export async function startMockBexio(
         if (!entry || entry.session.revoked) {
           stats.rejectedRefreshes++;
           return oauthError(res, 400, "invalid_grant", "Session not active");
+        }
+        if (currentSessions.get(chainOf(entry.session)) !== entry.session) {
+          stats.rejectedRefreshes++;
+          return oauthError(
+            res,
+            400,
+            "invalid_grant",
+            "Refresh token issued before the user session started",
+          );
         }
         if (entry.used) {
           // Reuse detection: a rotated-out refresh token kills the session.
@@ -513,7 +558,11 @@ export async function startMockBexio(
       if (!clientAuthenticated(req, form))
         return oauthError(res, 401, "invalid_client");
       const entry = refreshTokens.get(form.get("token") ?? "");
-      if (entry) revokeSession(entry.session);
+      if (entry) {
+        revokeSession(entry.session);
+        for (const current of currentSessions.values())
+          if (current.sub === entry.session.sub) revokeSession(current);
+      }
       stats.revocations++;
       return send(res, 200, undefined);
     }
@@ -615,7 +664,7 @@ export async function startMockBexio(
         scope: "openid profile email company_profile offline_access",
         revoked: false,
       };
-      sessions.set(session.sid, session);
+      startSession(session);
       return (await issueTokens(
         session,
         null,

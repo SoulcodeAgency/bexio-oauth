@@ -8,13 +8,13 @@ export const BEXIO_API_BASE_URL = "https://api.bexio.com";
  * Always requested. `company_profile` adds the company claims; `offline_access`
  * issues a refresh token that keeps working without the user present.
  */
-export const BASE_SCOPES = [
+export const BASE_SCOPES: readonly string[] = Object.freeze([
   "openid",
   "profile",
   "email",
   "company_profile",
   "offline_access",
-];
+]);
 
 export type ClaimBag = Record<string, unknown>;
 
@@ -73,11 +73,7 @@ export function mapClaims(claims: ClaimBag): BexioIdentity {
   };
 }
 
-/** The value a grant's ciphertext is bound to (see `TokenCipher`). */
-export function grantBinding(
-  ownerId: string,
-  companyId: string,
-  userId: string,
-): string {
-  return `${ownerId}\u0000${companyId}\u0000${userId}`;
+/** The value a connection's ciphertext is bound to (see `TokenCipher`). */
+export function connectionBinding(companyId: string, userId: string): string {
+  return `${companyId}\u0000${userId}`;
 }

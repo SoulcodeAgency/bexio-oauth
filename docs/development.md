@@ -23,6 +23,8 @@ bexio-oauth/
 
 npm workspaces tie it together. Only `packages/bexio-oauth` is ever published; everything under `examples/` is `"private": true`.
 
+**How `sql/` reaches `dist/`.** `packages/bexio-oauth/sql/NNNN_*.sql` is the source of truth for the schema; it is published as-is so people can copy the files by hand. `migrations()` (and the `sql` CLI command built on it) does not read those files at runtime: an app's bundler (Next.js bundles server dependencies by default) would move the code away from them. Instead `scripts/generate-migrations.mjs` embeds them into `packages/bexio-oauth/src/migrations.generated.ts`, which is committed. After adding or changing a migration, run `npm run sql:generate` and commit both files. `npm run build` refuses to build from a stale module (`--check`), and `src/sql.test.ts` fails if the embedded SQL differs from `sql/` or if any runtime source or `dist/` file touches the file system or `import.meta`.
+
 ## 2. Local setup
 
 Requirements: Node 24, npm 11, Docker (for Postgres and the local Supabase stack).
@@ -33,7 +35,7 @@ npm run check          # format, lint, typecheck, unit + integration tests
 npm run test:e2e       # example apps against mock-bexio (starts Postgres / Supabase locally)
 ```
 
-Integration and e2e tests never call the real Bexio. They use `examples/_shared/mock-bexio`. To try against real Bexio, run an example app with your own Bexio OAuth app credentials (see each example's `.env.example`).
+Integration and e2e tests never call the real Bexio. They use `examples/_shared/mock-bexio`, which models the Keycloak behavior the library depends on: rotating refresh tokens with reuse detection, and **one token chain per user and company**. Every new authorization of a user and company (code exchange, or `issueTokens` for tests that stand in for an auth framework) starts a new session, and refresh tokens issued before it fail with `invalid_grant` ("Refresh token issued before the user session started"), as Bexio does. Revoking any of a user's refresh tokens, even one from an older authorization or another company, ends all of the user's current chains, as live tests against Bexio showed. The mock serves one OAuth client; tests that need independent chains use different users or companies (`ADA` has two companies, `GRACE` and `KATHERINE` one each). Like Bexio, its tokens carry `given_name` and `family_name` but no `name`. To try against real Bexio, run an example app with your own Bexio OAuth app credentials (see each example's `.env.example`).
 
 ## 3. Tests
 
@@ -42,7 +44,7 @@ Integration and e2e tests never call the real Bexio. They use `examples/_shared/
 | Unit        | `packages/bexio-oauth/src/**/*.test.ts` | flows, errors, encryption, claim and role mapping, CLI                  | nothing                                                |
 | Integration | `packages/bexio-oauth/test/`            | Postgres store, refresh lock under concurrency, rotation, `refreshIdle` | Postgres (Docker), mock-bexio                          |
 | End-to-end  | `examples/*/e2e/`                       | real auth frameworks + the library, in a browser (Playwright)           | example app, mock-bexio                                |
-| Manual      | `examples/README.md` checklist          | the same flows against live Bexio                                       | your Bexio app credentials; once per release candidate |
+| Manual      | `examples/README.md` test scenarios     | the same flows against live Bexio                                       | your Bexio app credentials; once per release candidate |
 
 All automated layers run on every pull request. There are no nightly or scheduled test runs.
 
@@ -103,12 +105,14 @@ flowchart LR
     PR["pull_request"] --> T["PR title<br/>Conventional Commits"]
     PR --> E["examples e2e<br/>better-auth · supabase<br/>against mock-bexio"]
     PR --> C["npm run check<br/>format · lint · typecheck · unit · integration"]
-    T & C & E --> R{"All required<br/>checks green?"}
+    PR --> D["dependency-review<br/>new deps: vulnerabilities, licenses"]
+    PR --> Q["CodeQL (codeql.yml)<br/>TypeScript · workflows"]
+    T & C & E & D & Q --> R{"All required<br/>checks green?"}
     R -->|yes| M["mergeable"]
     R -->|no| X["blocked"]
 ```
 
-The `main` ruleset requires `check`, `e2e` and `pr-title`, allows squash merges only, and blocks direct pushes. Nobody bypasses it, the App included: release-please only pushes to its own `release-please--*` branch. The auto-merge workflow only acts after CI completed successfully, and GitHub still refuses a merge while a required check is missing or red.
+The `main` ruleset requires `check`, `e2e`, `pr-title`, `dependency-review` and both `analyze` jobs, allows squash merges only, and blocks direct pushes. `dependency-review` fails a PR that adds a dependency with a known vulnerability of moderate severity or higher. CodeQL (`codeql.yml`) also runs on pushes to `main` and weekly; its alerts show in the Security tab. Nobody bypasses it, the App included: release-please only pushes to its own `release-please--*` branch. The auto-merge workflow only acts after CI completed successfully, and GitHub still refuses a merge while a required check is missing or red.
 
 ### 5.3 Release (`release.yml`)
 
@@ -217,5 +221,6 @@ Every release after that is automated.
 - [ ] `soulcode-automation` App installed on the repo (contents + pull-requests write); variable `SC_AUTOMATION_CLIENT_ID`, secret `SC_AUTOMATION_PRIVATE_KEY`.
 - [ ] "Dependabot security updates" enabled.
 - [ ] Environment `npm`, deployment branches restricted to `main`.
-- [ ] `main` ruleset: PRs only, squash only, required checks `check`, `e2e` and `pr-title`, no bypass actors.
+- [ ] `main` ruleset: PRs only, squash only, required checks `check`, `e2e`, `pr-title`, `dependency-review`, `analyze (javascript-typescript)` and `analyze (actions)`, no bypass actors.
+- [ ] Code security: "Dependency graph" and "Code scanning" enabled (CodeQL via `codeql.yml`, not the default setup).
 - [ ] npm: trusted publisher configured, tokens disallowed (after the bootstrap publish).

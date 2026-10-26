@@ -21,7 +21,8 @@ for (const required of [
   "dist/index.js",
   "dist/index.d.ts",
   "dist/bin.js",
-  "sql/0001_bexio_grants.sql",
+  "dist/migrations.generated.js",
+  "sql/0001_bexio_oauth.sql",
 ]) {
   if (!files.some((f) => f.path === required)) {
     console.error(`Missing from the package: ${required}`);

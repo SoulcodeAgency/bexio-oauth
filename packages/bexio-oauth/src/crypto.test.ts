@@ -31,12 +31,10 @@ describe("TokenCipher", () => {
     );
   });
 
-  it("refuses ciphertext that belongs to another grant", async () => {
+  it("refuses ciphertext that belongs to another connection", async () => {
     const cipher = new TokenCipher({ current: "k1", keys: { k1 } });
-    const jwe = await cipher.encrypt("t", "owner-a\0cmp\0sub");
-    await expect(
-      cipher.decrypt(jwe, "owner-b\0cmp\0sub"),
-    ).rejects.toMatchObject({
+    const jwe = await cipher.encrypt("t", "cmp-a\0sub");
+    await expect(cipher.decrypt(jwe, "cmp-b\0sub")).rejects.toMatchObject({
       code: "decryption_failed",
     });
   });
@@ -55,6 +53,21 @@ describe("TokenCipher", () => {
     expect(
       () => new TokenCipher({ current: "k1", keys: { k1: "short" } }),
     ).toThrow(/32 bytes/);
+    // Same byte length, but not a clean base64url string: a mangled copy
+    // (stray quote, padding, standard base64 alphabet) must not be accepted.
+    for (const mangled of [
+      `"${k1}"`,
+      `${k1}=`,
+      `${k1.slice(0, 41)}+/`,
+      `${k1} `,
+    ]) {
+      expect(
+        () => new TokenCipher({ current: "k1", keys: { k1: mangled } }),
+      ).toThrow(/base64url/);
+    }
+    expect(
+      () => new TokenCipher({ current: "k1", keys: { k1 } }),
+    ).not.toThrow();
     expect(() => new TokenCipher({ current: "nope", keys: { k1 } })).toThrow(
       /not in keys/,
     );

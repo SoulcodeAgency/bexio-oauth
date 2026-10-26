@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import type { GrantRefresh, GrantStore, GrantUpsert } from "../src/index.js";
+import type {
+  ConnectionRefresh,
+  GrantStore,
+  GrantUpsert,
+} from "../src/index.js";
 
 const t0 = new Date("2026-03-01T10:00:00Z");
 const at = (ms: number) => new Date(t0.getTime() + ms);
@@ -19,12 +23,15 @@ function upsert(overrides: Partial<GrantUpsert> = {}): GrantUpsert {
     accessExpiresAt: at(300_000),
     refreshExpiresAt: null,
     scope: "openid",
+    authorizedAt: t0,
     now: t0,
     ...overrides,
   };
 }
 
-const refresh = (overrides: Partial<GrantRefresh> = {}): GrantRefresh => ({
+const refresh = (
+  overrides: Partial<ConnectionRefresh> = {},
+): ConnectionRefresh => ({
   accessToken: "enc-access-2",
   refreshToken: null,
   accessExpiresAt: at(700_000),
@@ -35,7 +42,7 @@ const refresh = (overrides: Partial<GrantRefresh> = {}): GrantRefresh => ({
   ...overrides,
 });
 
-/** A lock request for a grant whose access token has expired at `at(400_000)`. */
+/** A lock request for a connection whose access token has expired at `at(400_000)`. */
 const expired = (
   id: string,
   lockToken: string,
@@ -60,51 +67,179 @@ export function storeContract(name: string, setup: () => Promise<GrantStore>) {
       store = await setup();
     });
 
-    it("upsert inserts, then overwrites the same (owner, company, user)", async () => {
+    const statusOf = async (ownerId: string) =>
+      (await store.findGrants({ ownerId }))[0]!.connection.status;
+
+    it("upsert inserts a connection and a grant, then overwrites the same (owner, company, user)", async () => {
       const a = await store.upsertGrant(upsert());
       expect(a).toMatchObject({
         ownerId: "owner-1",
-        status: "active",
-        lastRefreshedAt: t0,
         createdAt: t0,
+        connection: {
+          companyId: "cmp-1",
+          userId: "user-1",
+          status: "active",
+          lastRefreshedAt: t0,
+          createdAt: t0,
+        },
       });
-      await store.acquireRefreshLock(expired(a.id, "L1"));
-      await store.markReauthRequired(a.id, "L1", at(1));
+      await store.acquireRefreshLock(expired(a.connection.id, "L1"));
+      await store.markReauthRequired(a.connection.id, "L1", at(1));
       const b = await store.upsertGrant(
         upsert({ accessToken: "enc-access-2", role: "admin", now: at(5_000) }),
       );
       expect(b.id).toBe(a.id);
       expect(b).toMatchObject({
-        accessToken: "enc-access-2",
-        role: "admin",
-        status: "active",
         createdAt: t0,
+        connection: {
+          id: a.connection.id,
+          accessToken: "enc-access-2",
+          role: "admin",
+          status: "active",
+          refreshLockedUntil: null,
+          createdAt: t0,
+          updatedAt: at(5_000),
+        },
       });
       expect(await store.findGrants({ ownerId: "owner-1" })).toHaveLength(1);
     });
 
-    it("finds by owner, company and grant id", async () => {
+    it("owners of the same Bexio identity share one connection; other identities get their own", async () => {
       const a = await store.upsertGrant(upsert());
-      await store.upsertGrant(upsert({ companyId: "cmp-2", now: at(1) }));
+      const b = await store.upsertGrant(
+        upsert({ ownerId: "owner-2", accessToken: "enc-b", now: at(1) }),
+      );
+      const other = await store.upsertGrant(
+        upsert({ ownerId: "owner-2", companyId: "cmp-2", now: at(2) }),
+      );
+      expect(b.id).not.toBe(a.id);
+      expect(b.createdAt).toEqual(at(1));
+      expect(b.connection.id).toBe(a.connection.id);
+      expect(other.connection.id).not.toBe(a.connection.id);
+      // The connection holds the tokens once: owner-1 sees owner-2's connect.
+      const [own] = await store.findGrants({ ownerId: "owner-1" });
+      expect(own!.connection.accessToken).toBe("enc-b");
+    });
+
+    it("connecting any owner revives every owner of that identity", async () => {
+      const a = await store.upsertGrant(upsert());
       await store.upsertGrant(upsert({ ownerId: "owner-2" }));
-      expect(await store.findGrants({ ownerId: "owner-1" })).toHaveLength(2);
+      await store.acquireRefreshLock(expired(a.connection.id, "L"));
+      await store.markReauthRequired(a.connection.id, "L", at(1));
+      expect(await statusOf("owner-1")).toBe("reauth_required");
+      expect(await statusOf("owner-2")).toBe("reauth_required");
+      await store.upsertGrant(upsert({ ownerId: "owner-2", now: at(2) }));
+      expect(await statusOf("owner-1")).toBe("active");
+      expect(await statusOf("owner-2")).toBe("active");
+    });
+
+    it("an older authorization only links its grant; an equal or newer one takes over the connection", async () => {
+      const a = await store.upsertGrant(upsert({ authorizedAt: at(10_000) }));
+      await store.acquireRefreshLock(expired(a.connection.id, "L"));
+      const older = await store.upsertGrant(
+        upsert({
+          ownerId: "owner-2",
+          accessToken: "enc-older",
+          authorizedAt: at(5_000),
+          now: at(20_000),
+        }),
+      );
+      // Linked, but the newer authorization's tokens and lock stay.
+      expect(older.connection.id).toBe(a.connection.id);
+      expect(await store.findGrants({ ownerId: "owner-2" })).toHaveLength(1);
+      expect(await store.getConnection(a.connection.id)).toMatchObject({
+        accessToken: "enc-access",
+        authorizedAt: at(10_000),
+        refreshLockedUntil: at(430_000),
+        updatedAt: t0,
+      });
+      for (const [ms, token] of [
+        [10_000, "enc-equal"],
+        [15_000, "enc-newer"],
+      ] as const) {
+        await store.upsertGrant(
+          upsert({ accessToken: token, authorizedAt: at(ms), now: at(ms) }),
+        );
+        expect(await store.getConnection(a.connection.id)).toMatchObject({
+          accessToken: token,
+          authorizedAt: at(ms),
+          refreshLockedUntil: null,
+        });
+      }
+    });
+
+    it("deleteUnusedConnection reports another connection of the same Bexio user", async () => {
+      const a = await store.upsertGrant(upsert());
+      await store.upsertGrant(
+        upsert({ ownerId: "owner-2", companyId: "cmp-2" }),
+      );
+      await store.deleteGrant(a.id);
+      expect(await store.deleteUnusedConnection(a.connection.id)).toMatchObject(
+        { userHasOtherConnections: true },
+      );
+    });
+
+    it("finds by owner, company and grant id, oldest first, with the connection", async () => {
+      const a = await store.upsertGrant(upsert());
+      const b = await store.upsertGrant(
+        upsert({ companyId: "cmp-2", now: at(1) }),
+      );
+      await store.upsertGrant(upsert({ ownerId: "owner-2" }));
+      expect(
+        (await store.findGrants({ ownerId: "owner-1" })).map((g) => g.id),
+      ).toEqual([a.id, b.id]);
       expect(
         await store.findGrants({ ownerId: "owner-1", companyId: "cmp-2" }),
-      ).toHaveLength(1);
+      ).toEqual([b]);
       expect(
         await store.findGrants({ ownerId: "owner-1", grantId: a.id }),
-      ).toEqual([a]);
-      expect(await store.getGrant(a.id)).toEqual(a);
+      ).toEqual([
+        {
+          ...a,
+          // owner-2's connect at t0 rewrote the shared connection.
+          connection: (await store.getConnection(a.connection.id))!,
+        },
+      ]);
+      expect(await store.findGrants({ ownerId: "nobody" })).toEqual([]);
+      // Not a uuid: no row, no driver error.
+      expect(
+        await store.findGrants({ ownerId: "owner-1", grantId: "not-a-uuid" }),
+      ).toEqual([]);
+      expect(
+        await store.getConnection("------------------------------------"),
+      ).toBeNull();
+    });
+
+    it("deleteGrant removes one owner; the connection goes only once no grant uses it", async () => {
+      const a = await store.upsertGrant(upsert());
+      const b = await store.upsertGrant(upsert({ ownerId: "owner-2" }));
+      expect(await store.deleteUnusedConnection(a.connection.id)).toBeNull();
+
+      await store.deleteGrant(a.id);
+      expect(await store.findGrants({ ownerId: "owner-1" })).toEqual([]);
+      expect(await store.findGrants({ ownerId: "owner-2" })).toHaveLength(1);
+      expect(await store.deleteUnusedConnection(a.connection.id)).toBeNull();
+      expect(await store.getConnection(a.connection.id)).not.toBeNull();
+
+      await store.deleteGrant(b.id);
+      expect(await store.deleteUnusedConnection(a.connection.id)).toMatchObject(
+        {
+          connection: { id: a.connection.id, refreshToken: "enc-refresh" },
+          userHasOtherConnections: false,
+        },
+      );
+      expect(await store.getConnection(a.connection.id)).toBeNull();
+      expect(await store.deleteUnusedConnection(a.connection.id)).toBeNull();
     });
 
     it("refresh lock: one winner, honors the condition, expires", async () => {
-      const g = await store.upsertGrant(
+      const { connection: c } = await store.upsertGrant(
         upsert({ accessExpiresAt: at(10_000) }),
       );
       // Not expiring yet → nothing to do.
       expect(
         await store.acquireRefreshLock({
-          id: g.id,
+          id: c.id,
           now: t0,
           lockUntil: at(30_000),
           lockToken: "L0",
@@ -112,25 +247,25 @@ export function storeContract(name: string, setup: () => Promise<GrantStore>) {
         }),
       ).toBeNull();
       expect(
-        await store.acquireRefreshLock(expired(g.id, "L1", 20_000)),
+        await store.acquireRefreshLock(expired(c.id, "L1", 20_000)),
       ).toMatchObject({
-        id: g.id,
+        id: c.id,
         refreshLockedUntil: at(50_000),
       });
       expect(
-        await store.acquireRefreshLock(expired(g.id, "L2", 20_000)),
+        await store.acquireRefreshLock(expired(c.id, "L2", 20_000)),
       ).toBeNull();
       // After the lock expires, the next caller takes over.
       expect(
-        await store.acquireRefreshLock(expired(g.id, "L3", 50_000)),
+        await store.acquireRefreshLock(expired(c.id, "L3", 50_000)),
       ).toMatchObject({
         refreshLockedUntil: at(80_000),
       });
     });
 
     it("refresh lock by idle time", async () => {
-      const g = await store.upsertGrant(upsert());
-      const req = { id: g.id, now: at(1), lockUntil: at(2), lockToken: "L" };
+      const { connection: c } = await store.upsertGrant(upsert());
+      const req = { id: c.id, now: at(1), lockUntil: at(2), lockToken: "L" };
       expect(
         await store.acquireRefreshLock({ ...req, refreshedBefore: t0 }),
       ).toBeNull();
@@ -139,87 +274,117 @@ export function storeContract(name: string, setup: () => Promise<GrantStore>) {
       ).not.toBeNull();
     });
 
-    it("saveRefreshed stores tokens, keeps nulls, releases the lock", async () => {
-      const g = await store.upsertGrant(upsert());
-      await store.acquireRefreshLock(expired(g.id, "L1"));
-      const saved = await store.saveRefreshed(g.id, "L1", refresh());
-      expect(saved).toMatchObject({
+    it("saveRefreshed stores the rotation once for every owner, keeps nulls, releases the lock", async () => {
+      const { connection: c } = await store.upsertGrant(upsert());
+      await store.upsertGrant(upsert({ ownerId: "owner-2" }));
+      await store.acquireRefreshLock(expired(c.id, "L1"));
+      const saved = await store.saveRefreshed(
+        c.id,
+        "L1",
+        refresh({ refreshToken: "enc-refresh-2" }),
+      );
+      const expected = {
         accessToken: "enc-access-2",
-        refreshToken: "enc-refresh",
+        refreshToken: "enc-refresh-2",
         scope: "openid",
         role: "member",
         refreshLockedUntil: null,
         lastRefreshedAt: at(400_000),
-      });
+      };
+      expect(saved).toMatchObject(expected);
+      for (const ownerId of ["owner-1", "owner-2"]) {
+        expect(
+          (await store.findGrants({ ownerId }))[0]!.connection,
+        ).toMatchObject(expected);
+      }
     });
 
     it("fences holder writes: an expired or replaced lock changes nothing", async () => {
-      const g = await store.upsertGrant(upsert());
-      await store.acquireRefreshLock(expired(g.id, "stale", 400_000, 1_000));
+      const { connection: c } = await store.upsertGrant(upsert());
+      await store.acquireRefreshLock(expired(c.id, "stale", 400_000, 1_000));
       // The stale holder's lock expires and a second caller takes over.
-      await store.acquireRefreshLock(expired(g.id, "fresh", 402_000));
+      await store.acquireRefreshLock(expired(c.id, "fresh", 402_000));
       expect(
-        await store.saveRefreshed(g.id, "stale", refresh({ accessToken: "x" })),
+        await store.saveRefreshed(c.id, "stale", refresh({ accessToken: "x" })),
       ).toBeNull();
-      await store.markReauthRequired(g.id, "stale", at(402_500));
-      await store.releaseRefreshLock(g.id, "stale");
-      const row = await store.getGrant(g.id);
-      expect(row).toMatchObject({
+      expect(
+        await store.markReauthRequired(c.id, "stale", at(402_500)),
+      ).toBeNull();
+      await store.releaseRefreshLock(c.id, "stale");
+      expect(await store.getConnection(c.id)).toMatchObject({
         accessToken: "enc-access",
         status: "active",
         refreshLockedUntil: at(432_000),
       });
       // The current holder still can.
-      expect(await store.saveRefreshed(g.id, "fresh", refresh())).toMatchObject(
+      expect(await store.saveRefreshed(c.id, "fresh", refresh())).toMatchObject(
         { accessToken: "enc-access-2" },
       );
     });
 
-    it("a reconnect clears the lock, so the in-flight refresh can't clobber it", async () => {
-      const g = await store.upsertGrant(upsert());
-      await store.acquireRefreshLock(expired(g.id, "L1"));
+    it("another owner's connect clears the lock, so the in-flight refresh can't clobber it", async () => {
+      const { connection: c } = await store.upsertGrant(upsert());
+      await store.acquireRefreshLock(expired(c.id, "L1"));
       await store.upsertGrant(
-        upsert({ accessToken: "enc-reconnected", now: at(401_000) }),
+        upsert({
+          ownerId: "owner-2",
+          accessToken: "enc-reconnected",
+          now: at(401_000),
+        }),
       );
-      expect(await store.saveRefreshed(g.id, "L1", refresh())).toBeNull();
-      await store.markReauthRequired(g.id, "L1", at(402_000));
-      expect(await store.getGrant(g.id)).toMatchObject({
+      expect(await store.saveRefreshed(c.id, "L1", refresh())).toBeNull();
+      expect(
+        await store.markReauthRequired(c.id, "L1", at(402_000)),
+      ).toBeNull();
+      expect(await store.getConnection(c.id)).toMatchObject({
         accessToken: "enc-reconnected",
         status: "active",
         refreshLockedUntil: null,
       });
     });
 
-    it("markReauthRequired and releaseRefreshLock with the right token, then delete", async () => {
-      const g = await store.upsertGrant(upsert());
-      await store.acquireRefreshLock(expired(g.id, "L1"));
-      await store.releaseRefreshLock(g.id, "L1");
-      expect((await store.getGrant(g.id))!.refreshLockedUntil).toBeNull();
-      await store.acquireRefreshLock(expired(g.id, "L2"));
-      await store.markReauthRequired(g.id, "L2", at(1));
-      expect((await store.getGrant(g.id))!.status).toBe("reauth_required");
-      // A reauth_required grant can't be locked for refresh.
-      expect(await store.acquireRefreshLock(expired(g.id, "L3"))).toBeNull();
-      await store.deleteGrant(g.id);
-      expect(await store.getGrant(g.id)).toBeNull();
+    it("markReauthRequired and releaseRefreshLock with the right token", async () => {
+      const { connection: c } = await store.upsertGrant(upsert());
+      await store.upsertGrant(upsert({ ownerId: "owner-2" }));
+      await store.acquireRefreshLock(expired(c.id, "L1"));
+      await store.releaseRefreshLock(c.id, "L1");
+      expect((await store.getConnection(c.id))!.refreshLockedUntil).toBeNull();
+      await store.acquireRefreshLock(expired(c.id, "L2"));
+      expect(await store.markReauthRequired(c.id, "L2", at(1))).toMatchObject({
+        status: "reauth_required",
+        refreshLockedUntil: null,
+        updatedAt: at(1),
+      });
+      expect(await statusOf("owner-1")).toBe("reauth_required");
+      expect(await statusOf("owner-2")).toBe("reauth_required");
+      // A reauth_required connection can't be locked for refresh.
+      expect(await store.acquireRefreshLock(expired(c.id, "L3"))).toBeNull();
     });
 
-    it("lists active idle grants, oldest first, with a limit", async () => {
-      await store.upsertGrant(upsert({ ownerId: "a", now: at(2) }));
-      await store.upsertGrant(upsert({ ownerId: "b", now: at(1) }));
-      const dead = await store.upsertGrant(
-        upsert({ ownerId: "c", now: at(0) }),
+    it("lists active idle connections with grants, once each, oldest first, with a limit", async () => {
+      await store.upsertGrant(upsert({ userId: "a", now: at(2) }));
+      await store.upsertGrant(
+        upsert({ userId: "b", ownerId: "owner-1", now: at(1) }),
       );
-      await store.acquireRefreshLock(expired(dead.id, "L"));
-      await store.markReauthRequired(dead.id, "L", at(3));
-      await store.upsertGrant(upsert({ ownerId: "fresh", now: at(100) }));
-      const idle = await store.listIdleGrants({
+      await store.upsertGrant(
+        upsert({ userId: "b", ownerId: "owner-2", now: at(1) }),
+      );
+      const dead = await store.upsertGrant(upsert({ userId: "c", now: at(0) }));
+      await store.acquireRefreshLock(expired(dead.connection.id, "L"));
+      await store.markReauthRequired(dead.connection.id, "L", at(3));
+      const unused = await store.upsertGrant(
+        upsert({ userId: "d", now: at(0) }),
+      );
+      await store.deleteGrant(unused.id);
+      await store.upsertGrant(upsert({ userId: "fresh", now: at(100) }));
+
+      const idle = await store.listIdleConnections({
         refreshedBefore: at(50),
         limit: 10,
       });
-      expect(idle.map((g) => g.ownerId)).toEqual(["b", "a"]);
+      expect(idle.map((c) => c.userId)).toEqual(["b", "a"]);
       expect(
-        await store.listIdleGrants({ refreshedBefore: at(50), limit: 1 }),
+        await store.listIdleConnections({ refreshedBefore: at(50), limit: 1 }),
       ).toHaveLength(1);
     });
   });
