@@ -37,6 +37,7 @@ For a live Bexio account, leave `BEXIO_ISSUER` and `BEXIO_API_BASE_URL` empty in
 - **The provider isn't set up in `config.toml`.** Create the custom OIDC provider through the Auth admin API (`supabase.auth.admin.customProviders.createProvider`, or `POST <SUPABASE_URL>/auth/v1/admin/custom-providers` with the secret key; locally `http://127.0.0.1:55621`) with identifier `custom:bexio`, issuer `https://auth.bexio.com/realms/bexio` and scopes `openid profile email company_profile offline_access`. Then set `BEXIO_SUPABASE_PROVIDER=custom:bexio`. `npm run db:reset` deletes the provider; register it again afterwards.
 - **Give the app its own Bexio OAuth client**, shared by the custom provider and the library, but not with another app (see [Better Auth](#better-auth)).
 - **What Supabase hands over:** `provider_token` and `provider_refresh_token` (with `offline_access`), but no ID token. Bexio's access token carries only ids, so `saveGrant` reads the company name, email and person name from Bexio's userinfo endpoint.
+- **An account created by Sign in with Bexio has no password**, so the email + password form can't sign it in; use Sign in with Bexio for it.
 - **The session cookie keeps no Bexio tokens:** [`app/auth/callback/route.ts`](supabase/app/auth/callback/route.ts) re-saves the session without them.
 - **Plan limits:** a Supabase Free plan project can add up to 3 custom providers; Pro and above are unlimited ([Supabase docs](https://supabase.com/docs/guides/auth/custom-oauth-providers)). Self-hosted Auth reads `GOTRUE_CUSTOM_OAUTH_MAX_PROVIDERS`.
 
