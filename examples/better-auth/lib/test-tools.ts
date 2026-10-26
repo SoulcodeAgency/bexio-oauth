@@ -9,10 +9,10 @@ import { env, optionalEnv } from "./env";
  * disconnecting (now, or later, once a reconnect has made it stale).
  *
  * They read the library's table and decrypt a refresh token, which a real app
- * never does: the library keeps tokens to itself on purpose. Only on with
- * BEXIO_TEST_TOOLS=on; never enable them in production.
+ * never does: the library keeps tokens to itself on purpose. On unless
+ * BEXIO_TEST_TOOLS=off; don't copy them into a production app.
  */
-export const testToolsEnabled = () => process.env.BEXIO_TEST_TOOLS === "on";
+export const testToolsEnabled = () => process.env.BEXIO_TEST_TOOLS !== "off";
 
 /**
  * Encrypted refresh tokens saved for a later revoke, by connection id. On

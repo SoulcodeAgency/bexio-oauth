@@ -29,7 +29,7 @@ async function companyName(grant: Grant): Promise<string> {
   }
 }
 
-/** Test tools for this grant's connection (BEXIO_TEST_TOOLS=on). */
+/** Test tools for this grant's connection (lib/test-tools.ts). */
 function TestTools({ ownerId, grant }: { ownerId: string; grant: Grant }) {
   const tools: [tool: string, label: string][] = [
     ["expire", "Expire access token"],
