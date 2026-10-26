@@ -139,6 +139,13 @@ describe("mock-bexio", () => {
     expect((await refresh(graceTokens.refresh_token)).status).toBe(200);
   });
 
+  it("a new authorization for another company keeps the first company's chain", async () => {
+    const alpha = await authorize({ companyId: "cmp-alpha" });
+    const beta = await authorize({ companyId: "cmp-beta" });
+    expect((await refresh(alpha.refresh_token)).status).toBe(200);
+    expect((await refresh(beta.refresh_token)).status).toBe(200);
+  });
+
   it("tokens handed out directly count as a new authorization", async () => {
     const before = await authorize({ companyId: "cmp-beta" });
     const direct = await mock.issueTokens({ companyId: "cmp-beta" });

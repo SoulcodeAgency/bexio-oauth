@@ -17,7 +17,7 @@ npx @soulcode/bexio-oauth keygen                                    # encryption
 
 Requires Node ≥ 24 and PostgreSQL.
 
-Use one Bexio OAuth client per app: Bexio keeps one refresh token chain per user and client, so apps sharing a client id invalidate each other's grants. Owners of your app that connect the same Bexio user and company share one connection, refreshed once for all of them ([guide §2](https://github.com/SoulcodeAgency/bexio-oauth/blob/main/docs/integration.md#why-owners-of-the-same-identity-share-a-connection)).
+Use one Bexio OAuth client per app: Bexio keeps one refresh token chain per user, company and client, so apps sharing a client id invalidate each other's grants. Owners of your app that connect the same Bexio user and company share one connection, refreshed once for all of them ([guide §2](https://github.com/SoulcodeAgency/bexio-oauth/blob/main/docs/integration.md#why-owners-of-the-same-identity-share-a-connection)).
 
 ## Quickstart
 

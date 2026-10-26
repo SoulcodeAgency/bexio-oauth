@@ -10,13 +10,14 @@
  *   profile (`given_name`/`family_name` but no `name`);
  * - rotating refresh tokens; reusing one revokes the whole session (Keycloak's
  *   refresh-token reuse detection);
- * - one token chain per user and client: every new authorization of a user
- *   starts a new session, and refresh tokens issued before it fail with
- *   `invalid_grant` ("Refresh token issued before the user session started").
- *   The mock serves a single client, so the chain is per user;
+ * - one token chain per user, company and client: every new authorization of
+ *   a user and company starts a new session, and refresh tokens issued before
+ *   it fail with `invalid_grant` ("Refresh token issued before the user
+ *   session started"). Another company's chain is not affected. The mock
+ *   serves a single client;
  * - token revocation, modeled pessimistically (unverified against Bexio):
  *   revoking any of a user's refresh tokens, even one from an older
- *   authorization, ends the user's current chain too;
+ *   authorization or another company, ends all of the user's current chains;
  * - userinfo, `GET /3.0/permissions`, `GET /2.0/company_profile`.
  *
  * Kept to a single file without relative imports so it runs directly with
@@ -213,7 +214,7 @@ export async function startMockBexio(
   const codes = new Map<string, Code>();
   const refreshTokens = new Map<string, { session: Session; used: boolean }>();
   const sessions = new Map<string, Session>();
-  /** The session each user's latest authorization started, by `sub`. */
+  /** The session each user's latest authorization for a company started. */
   const currentSessions = new Map<string, Session>();
   const stats: MockStats = {
     authorizationCodeGrants: 0,
@@ -351,10 +352,13 @@ export async function startMockBexio(
     session.revoked = true;
   }
 
-  /** A new authorization: the user's earlier refresh tokens stop working. */
+  const chainOf = (session: Session) =>
+    `${session.sub}\u0000${session.companyId}`;
+
+  /** A new authorization: earlier refresh tokens of the user and company stop working. */
   function startSession(session: Session) {
     sessions.set(session.sid, session);
-    currentSessions.set(session.sub, session);
+    currentSessions.set(chainOf(session), session);
   }
 
   const send = (
@@ -522,7 +526,7 @@ export async function startMockBexio(
           stats.rejectedRefreshes++;
           return oauthError(res, 400, "invalid_grant", "Session not active");
         }
-        if (currentSessions.get(entry.session.sub) !== entry.session) {
+        if (currentSessions.get(chainOf(entry.session)) !== entry.session) {
           stats.rejectedRefreshes++;
           return oauthError(
             res,
@@ -556,8 +560,8 @@ export async function startMockBexio(
       const entry = refreshTokens.get(form.get("token") ?? "");
       if (entry) {
         revokeSession(entry.session);
-        const current = currentSessions.get(entry.session.sub);
-        if (current) revokeSession(current);
+        for (const current of currentSessions.values())
+          if (current.sub === entry.session.sub) revokeSession(current);
       }
       stats.revocations++;
       return send(res, 200, undefined);
