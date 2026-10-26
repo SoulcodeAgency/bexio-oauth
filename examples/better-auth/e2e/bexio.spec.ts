@@ -270,6 +270,13 @@ test("test tools: revoking a saved, stale token ends the current chain", async (
     "data-status",
     "reauth_required",
   );
+
+  // Reconnect right from the grant.
+  await nextLogin({ sub: ADA, companyId: "cmp-beta" });
+  await ws.getByTestId("reconnect").click();
+  await expect(ws.getByTestId("api-result")).toHaveText(
+    "API call OK: Beta GmbH",
+  );
 });
 
 test("a cancelled connect returns with the error code and saves nothing", async ({

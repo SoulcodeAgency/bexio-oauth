@@ -34,7 +34,7 @@ export default async function Home({
       )}
 
       <h2>Your Bexio login (saveGrant)</h2>
-      <Grants ownerId={session.user.id} />
+      <Grants ownerId={session.user.id} connectHref="/api/bexio/connect" />
 
       <h2>Workspaces (Connect Bexio)</h2>
       {WORKSPACES.map((slug) => (
@@ -48,7 +48,10 @@ export default async function Home({
               Connect Bexio
             </a>
           </h3>
-          <Grants ownerId={workspaceOwner(slug)} />
+          <Grants
+            ownerId={workspaceOwner(slug)}
+            connectHref={`/api/bexio/connect?workspace=${slug}`}
+          />
         </section>
       ))}
     </main>

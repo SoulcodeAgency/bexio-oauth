@@ -53,29 +53,48 @@ function TestTools({ ownerId, grant }: { ownerId: string; grant: Grant }) {
   );
 }
 
-export async function Grants({ ownerId }: { ownerId: string }) {
+/**
+ * The owner's grants. `connectHref` starts Connect Bexio for this owner; it
+ * is how a "Reconnect required" grant gets new tokens.
+ */
+export async function Grants({
+  ownerId,
+  connectHref,
+}: {
+  ownerId: string;
+  connectHref: string;
+}) {
   const grants = await getBexio().listGrants({ ownerId });
   if (grants.length === 0)
     return <p data-testid={`grants-${ownerId}`}>Not connected.</p>;
   return (
     <ul data-testid={`grants-${ownerId}`}>
       {await Promise.all(
-        grants.map(async (g) => (
-          <li key={g.id} data-testid="grant" data-status={g.status}>
-            <strong>{g.companyName}</strong> ({g.role}) · {g.userName} ·{" "}
-            <span data-testid="api-result">
-              {g.status === "active"
-                ? await companyName(g)
-                : "Reconnect required"}
-            </span>{" "}
-            <form action={disconnect} style={{ display: "inline" }}>
-              <input type="hidden" name="ownerId" value={ownerId} />
-              <input type="hidden" name="grantId" value={g.id} />
-              <button data-testid="disconnect">Disconnect</button>
-            </form>
-            {testToolsEnabled() && <TestTools ownerId={ownerId} grant={g} />}
-          </li>
-        )),
+        grants.map(async (g) => {
+          const result =
+            g.status === "active" ? await companyName(g) : "Reconnect required";
+          return (
+            <li key={g.id} data-testid="grant" data-status={g.status}>
+              <strong>{g.companyName}</strong> ({g.role}) · {g.userName} ·{" "}
+              <span data-testid="api-result">{result}</span>{" "}
+              {result === "Reconnect required" && (
+                <a
+                  data-testid="reconnect"
+                  href={connectHref}
+                  title={`Connect Bexio again and pick ${g.companyName ?? "the same company"}`}
+                >
+                  Reconnect
+                </a>
+              )}{" "}
+              <form action={disconnect} style={{ display: "inline" }}>
+                <input type="hidden" name="ownerId" value={ownerId} />
+                <input type="hidden" name="grantId" value={g.id} />
+                <button data-testid="disconnect">Disconnect</button>
+              </form>
+              {testToolsEnabled() && <TestTools ownerId={ownerId} grant={g} />}
+            </li>
+          );
+        }),
       )}
     </ul>
   );
