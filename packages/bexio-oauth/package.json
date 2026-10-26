@@ -1,6 +1,6 @@
 {
   "name": "@soulcode/bexio-oauth",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Bexio OAuth token custody for Node apps: connect Bexio accounts, store tokens encrypted in Postgres, get a valid access token anywhere.",
   "keywords": [
     "bexio",
