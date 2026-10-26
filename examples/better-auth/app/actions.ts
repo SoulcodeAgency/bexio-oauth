@@ -29,7 +29,7 @@ const TEST_TOOLS = {
   "revoke-saved": revokeSavedToken,
 };
 
-/** The live checklist's test tools (lib/test-tools.ts); off unless BEXIO_TEST_TOOLS=on. */
+/** Test tools for live Bexio accounts (lib/test-tools.ts); off unless BEXIO_TEST_TOOLS=on. */
 export async function testTool(formData: FormData) {
   if (!testToolsEnabled()) throw new Error("Test tools are off");
   const session = await getSession();

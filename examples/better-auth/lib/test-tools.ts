@@ -4,7 +4,7 @@ import { getPool } from "./db";
 import { env, optionalEnv } from "./env";
 
 /**
- * Test tools for the live checklist in examples/README.md: expire a
+ * Test tools for live Bexio accounts (examples/README.md): expire a
  * connection's access token, and revoke its refresh token at Bexio without
  * disconnecting (now, or later, once a reconnect has made it stale).
  *
@@ -65,7 +65,7 @@ async function revoke(jwe: string): Promise<void> {
   if (!res.ok) throw new Error(`revocation failed: HTTP ${res.status}`);
 }
 
-/** The next getAccessToken refreshes (the "forced refresh" of the checklist). */
+/** The next getAccessToken refreshes: a forced refresh. */
 export async function expireAccessToken(connectionId: string): Promise<void> {
   await getPool().query(
     "UPDATE bexio_connections SET access_expires_at = now() - interval '1 minute' WHERE id = $1",

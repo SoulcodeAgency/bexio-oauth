@@ -44,7 +44,7 @@ Integration and e2e tests never call the real Bexio. They use `examples/_shared/
 | Unit        | `packages/bexio-oauth/src/**/*.test.ts` | flows, errors, encryption, claim and role mapping, CLI                  | nothing                                                |
 | Integration | `packages/bexio-oauth/test/`            | Postgres store, refresh lock under concurrency, rotation, `refreshIdle` | Postgres (Docker), mock-bexio                          |
 | End-to-end  | `examples/*/e2e/`                       | real auth frameworks + the library, in a browser (Playwright)           | example app, mock-bexio                                |
-| Manual      | `examples/README.md` checklist          | the same flows against live Bexio                                       | your Bexio app credentials; once per release candidate |
+| Manual      | `examples/README.md` test scenarios     | the same flows against live Bexio                                       | your Bexio app credentials; once per release candidate |
 
 All automated layers run on every pull request. There are no nightly or scheduled test runs.
 
