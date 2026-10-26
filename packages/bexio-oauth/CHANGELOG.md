@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.0](https://github.com/SoulcodeAgency/bexio-oauth/compare/v0.2.0...v0.3.0) (2026-10-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* schema replaced; recreate the table from `npx @soulcode/bexio-oauth sql`.
+
+### Features
+
+* share one Bexio token chain across owners ([#17](https://github.com/SoulcodeAgency/bexio-oauth/issues/17)) ([1e95d97](https://github.com/SoulcodeAgency/bexio-oauth/commit/1e95d9768f4a7f7fb437e5b669ec793c2ab761c0))
+
 ## [0.2.0](https://github.com/SoulcodeAgency/bexio-oauth/compare/v0.1.0...v0.2.0) (2026-10-25)
 
 
