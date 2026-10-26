@@ -6,8 +6,9 @@ import { createClient } from "@/lib/supabase/server";
 // (BEXIO_SUPABASE_PROVIDER, e.g. "custom:bexio"). exchangeCodeForSession
 // returns the provider tokens once; the library takes them over, and the
 // Supabase session is re-saved without them.
-// Not yet verified against live Bexio: Supabase Auth requires a public HTTPS
-// issuer, so this can't run against the local mock (see examples/README.md).
+// Validated against live Bexio, but not in the e2e suite: Supabase Auth
+// requires a public HTTPS issuer, so this can't run against the local mock
+// (see examples/README.md).
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const code = url.searchParams.get("code");

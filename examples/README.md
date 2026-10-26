@@ -1,6 +1,6 @@
 # Examples
 
-Runnable apps that show `@soulcode/bexio-oauth` inside real auth stacks. They are the recipes behind [docs/integration.md §8](../docs/integration.md#8-sign-in-with-bexio) and carry the end-to-end tests. None of this is published.
+Runnable apps that show `@soulcode/bexio-oauth` inside real auth stacks. They are the recipes behind [docs/integration.md §8](../docs/integration.md#8-sign-in-with-bexio).
 
 | App                                        | Auth                             | Database                              | Shows                                                                                                                                                                                                                                                  | e2e               |
 | ------------------------------------------ | -------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------- |
@@ -30,24 +30,22 @@ The Supabase example needs Docker: `npm run db:start` in `examples/supabase` sta
 
 ## Supabase
 
-> **Alpha.** "Sign in with Bexio" through Supabase Auth needs validation against a production Bexio account before you rely on it. "Connect Bexio" for Supabase users is not affected; it is covered by the e2e test.
+> **Validated against live Bexio, not in the automated tests.** "Sign in with Bexio" through Supabase Auth's custom OIDC provider works, checked with the local Supabase stack against a production Bexio account. Supabase Auth only accepts a public HTTPS issuer, so it can't run against the local mock in CI. "Connect Bexio" for Supabase users is covered by the e2e test.
 
-- **The provider isn't set up in `config.toml`.** Create the custom OIDC provider through the Auth admin API (`supabase.auth.admin.customProviders.createProvider`) with issuer `https://auth.bexio.com/realms/bexio` and scopes `openid profile email company_profile offline_access`. Then set `BEXIO_SUPABASE_PROVIDER=custom:bexio`.
+- **The provider isn't set up in `config.toml`.** Create the custom OIDC provider through the Auth admin API (`supabase.auth.admin.customProviders.createProvider`, or `POST <SUPABASE_URL>/auth/v1/admin/custom-providers` with the secret key; locally `http://127.0.0.1:55621`) with identifier `custom:bexio`, issuer `https://auth.bexio.com/realms/bexio` and scopes `openid profile email company_profile offline_access`. Then set `BEXIO_SUPABASE_PROVIDER=custom:bexio`. `npm run db:reset` deletes the provider; register it again afterwards.
 - **Give the app its own Bexio OAuth client**, shared by the custom provider and the library, but not with another app (see [Better Auth](#better-auth)).
-- **There is no automated test for it.** Supabase Auth only accepts a public HTTPS issuer, so it can't run against the local mock.
-- **Open questions for the validation:**
-  - Does Supabase return `provider_refresh_token` for a custom OIDC provider?
-  - Does it pass the `offline_access` and `company_profile` scopes through?
-  - Do plan limits apply to custom providers?
+- **What Supabase hands over:** `provider_token` and `provider_refresh_token`, with the `offline_access` and `company_profile` scopes granted, so the library can refresh in the background. There is no ID token, and Bexio's access token carries only ids (`company_id`, `company_user_id`, `sub`), so `saveGrant` reads the company name, email and person name from Bexio's userinfo endpoint.
+- **The session cookie keeps no Bexio tokens.** After [`app/auth/callback/route.ts`](supabase/app/auth/callback/route.ts) re-saves the session, the `sb-…-auth-token` cookie holds only Supabase's own session fields.
+- **Plan limits:** a Supabase Free plan project can add up to 3 custom providers; Pro and above are unlimited ([Supabase docs](https://supabase.com/docs/guides/auth/custom-oauth-providers)). Self-hosted Auth reads `GOTRUE_CUSTOM_OAUTH_MAX_PROVIDERS` (unlimited by default).
 
 ## Redirect URIs to register at Bexio
 
-| URI                                             | Used by                                                     |
-| ----------------------------------------------- | ----------------------------------------------------------- |
-| `http://localhost:3400/api/auth/callback/bexio` | Better Auth sign-in (`genericOAuth`, Better Auth 1.7 route) |
-| `http://localhost:3400/api/bexio/callback`      | Connect Bexio, Better Auth app                              |
-| `http://localhost:3300/api/bexio/callback`      | Connect Bexio, Supabase app                                 |
-| `<SUPABASE_URL>/auth/v1/callback`               | Supabase Auth custom provider (Sign in with Bexio)          |
+| URI                                             | Used by                                                                                                                                                    |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `http://localhost:3400/api/auth/callback/bexio` | Better Auth sign-in (`genericOAuth`, Better Auth 1.7 route)                                                                                                |
+| `http://localhost:3400/api/bexio/callback`      | Connect Bexio, Better Auth app                                                                                                                             |
+| `http://localhost:3300/api/bexio/callback`      | Connect Bexio, Supabase app                                                                                                                                |
+| `http://127.0.0.1:55621/auth/v1/callback`         | Supabase Auth custom provider (Sign in with Bexio) |
 
 ## Manual live-Bexio checklist
 
@@ -60,4 +58,4 @@ Run once per release candidate, in both apps, with a real Bexio OAuth app (`.env
 - [ ] Two owners, one identity: connect the same Bexio user and company for workspace a, then b. Both show the same connection. Force a refresh: both calls succeed (a's original tokens are dead at Bexio by now, so this proves the sharing). Disconnect a, force a refresh: b still works. Disconnect b: the refresh token is revoked.
 - [ ] **Open:** the same Bexio user, two companies. Connect workspace a with company X, then workspace b with the same user and company Y, and force a refresh of a. If a becomes `reauth_required`, Bexio keeps one chain per user rather than per (user, company), and connections must be keyed per user ([design notes](../docs/integration.md#15-design-notes)). Until this is answered, `disconnect` doesn't revoke while the user has another connection.
 - [ ] **Open:** revoking a stale token. Connect workspace a, then b (same user and company, so a's original refresh token is stale), copy a's original refresh token before b connects, revoke it with `curl` at Bexio's revocation endpoint, then force a refresh of b. If b fails, revocation ends the user's current chain whichever token it names (the mock's pessimistic model, and the reason `disconnect` never revokes a `reauth_required` connection).
-- [ ] Supabase only: Sign in with Bexio through the custom provider (answers the open questions in [Supabase](#supabase)).
+- [ ] Supabase only: Sign in with Bexio through the custom provider: the connection shows company and user name and has a refresh token, a forced refresh works, and the `sb-…-auth-token` cookie holds no `provider_` fields.
