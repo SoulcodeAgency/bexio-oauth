@@ -11,11 +11,13 @@ It is **not** an auth framework: your app keeps its own login. For "Sign in with
 
 ```bash
 npm install @soulcode/bexio-oauth pg
-npx @soulcode/bexio-oauth sql > migrations/0001_bexio_oauth.sql    # then apply it
-npx @soulcode/bexio-oauth keygen                                    # encryption key
+npx @soulcode/bexio-oauth sql --token-role bexio_token > migrations/0001_bexio_oauth.sql   # then apply it
+npx @soulcode/bexio-oauth keygen                                                           # encryption key
 ```
 
-Requires Node ≥ 24 and PostgreSQL.
+Requires Node ≥ 24 and PostgreSQL ≥ 13.
+
+**Least-privilege database access by default.** The SQL puts the two tables in their own schema, `bexio_oauth`, and creates a login role, `bexio_store`, that can reach those tables and nothing else; `--token-role` adds `bexio_token`, a narrower role for workers and cron jobs that only use tokens (recommended). Set the passwords out of band (`ALTER ROLE bexio_store PASSWORD '…'`) and connect your app as `bexio_store`: a leaked app secret then exposes encrypted token rows, not your database. Architecture examples, Supabase pooler setup and upgrades: [guide §4](https://github.com/SoulcodeAgency/bexio-oauth/blob/main/docs/integration.md#4-database-setup).
 
 Use one Bexio OAuth client per app: Bexio keeps one refresh token chain per user, company and client, so apps sharing a client id invalidate each other's grants. Owners of your app that connect the same Bexio user and company share one connection, refreshed once for all of them ([guide §2](https://github.com/SoulcodeAgency/bexio-oauth/blob/main/docs/integration.md#why-owners-of-the-same-identity-share-a-connection)).
 
@@ -32,6 +34,7 @@ export const bexio = createBexioOAuth({
   redirectUri: process.env.BEXIO_REDIRECT_URI!, // e.g. https://app.example.com/api/bexio/callback
   scopes: ["contact_show"],
   keys: JSON.parse(process.env.BEXIO_TOKEN_KEYS!), // {"current":"k1","keys":{"k1":"<keygen>"}}
+  // DATABASE_URL logs in as bexio_store; the tables are in schema bexio_oauth.
   store: postgresStore(
     new Pool({ connectionString: process.env.DATABASE_URL }),
   ),

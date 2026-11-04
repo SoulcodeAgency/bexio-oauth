@@ -17,6 +17,7 @@ Guidance for coding agents and contributors working on this repository.
 - **Generic by rule.** No references to specific downstream products or companies in code, docs, examples or table names. Use "user", "workspace", "your app".
 - **Minimal dependencies.** Runtime dependencies are `openid-client` and `jose` only. No custom protocol or crypto code: use those libraries.
 - **Single-statement store operations.** Every `GrantStore` method is one SQL statement (works through poolers and HTTP drivers).
+- **Least-privilege SQL.** Tables are always schema-qualified (`bexio_oauth.…`, never `search_path`); migrations are idempotent and grant explicitly to `bexio_store` / `bexio_token`. See "Writing a migration" in [docs/development.md](docs/development.md).
 - **Errors** are `BexioOAuthError` with a `code`; never put token values in messages or logs.
 - **ADRs** (`docs/adr/`) only when the architecture departs from the design notes in `docs/integration.md` §15.
 

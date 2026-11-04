@@ -5,8 +5,10 @@ import {
   createBexioOAuth,
   generateKey,
   migrations,
+  postgresStore,
   type BexioOAuthConfig,
   type GrantStore,
+  type SqlClient,
 } from "../src/index.js";
 
 export const REDIRECT_URI = "http://localhost/api/bexio/callback";
@@ -101,38 +103,67 @@ export async function connect(
 }
 
 /**
- * A pool on a fresh schema with the shipped migrations applied, so every test
- * file gets empty tables.
+ * The shipped migrations, applied twice (they must be idempotent) with a
+ * fresh schema and fresh store and token roles, then once more with a second
+ * token role (each role must keep its own policies), so every test file gets
+ * empty tables. `pool` connects as the store role with its default
+ * `search_path`, which doesn't include the schema: the store must name it in
+ * every statement.
  */
 export async function freshDatabase() {
   const url = process.env.DATABASE_URL;
   if (!url) return null;
-  const schema = `t_${randomUUID().replaceAll("-", "")}`;
-  const admin = new pg.Pool({ connectionString: url, max: 1 });
-  await admin.query(`CREATE SCHEMA ${schema}`);
-  const makePool = () =>
-    new pg.Pool({
-      connectionString: url,
-      max: 5,
-      options: `-c search_path=${schema}`,
-    });
+  const id = randomUUID().replaceAll("-", "").slice(0, 20);
+  const schema = `t_${id}`;
+  const storeRole = `t_${id}_store`;
+  const tokenRole = `t_${id}_token`;
+  const secondTokenRole = `t_${id}_token2`;
+  const roles = [storeRole, tokenRole, secondTokenRole];
+  const password = randomUUID();
+  const admin = new pg.Pool({ connectionString: url, max: 2 });
+  for (const role of [tokenRole, tokenRole, secondTokenRole]) {
+    for (const m of await migrations({ schema, storeRole, tokenRole: role }))
+      await admin.query(m.sql);
+  }
+  for (const role of roles)
+    await admin.query(`ALTER ROLE "${role}" PASSWORD '${password}'`);
+
+  const pools: pg.Pool[] = [];
+  const makePool = (role = storeRole) => {
+    const login = new URL(url);
+    login.username = role;
+    login.password = password;
+    const p = new pg.Pool({ connectionString: login.toString(), max: 5 });
+    pools.push(p);
+    return p;
+  };
   const pool = makePool();
-  for (const m of await migrations()) await pool.query(m.sql);
-  const pools = [pool];
+  /** `schema.table`, for raw queries. */
+  const table = (name: "bexio_connections" | "bexio_grants") =>
+    `"${schema}".${name}`;
   return {
+    schema,
     pool,
-    /** An independent pool on the same schema (a second "instance"). */
-    newPool() {
-      const p = makePool();
-      pools.push(p);
-      return p;
-    },
+    /** Superuser pool, for test setup and inspection. */
+    admin,
+    table,
+    /** A store on `client` (default: `pool`) for this schema. */
+    store: (client: SqlClient = pool) => postgresStore(client, { schema }),
+    /** An independent pool as the store role (a second "instance"). */
+    newPool: () => makePool(),
+    /** A pool as the token role (`getAccessToken`, `listGrants`, `refreshIdle` only). */
+    tokenPool: () => makePool(tokenRole),
+    /** A pool as the second token role, set up after the first. */
+    secondTokenPool: () => makePool(secondTokenRole),
     async truncate() {
-      await pool.query("TRUNCATE bexio_grants, bexio_connections");
+      await admin.query(
+        `TRUNCATE ${table("bexio_grants")}, ${table("bexio_connections")}`,
+      );
     },
     async close() {
       await Promise.all(pools.map((p) => p.end()));
-      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+      await admin.query(`DROP SCHEMA "${schema}" CASCADE`);
+      for (const role of roles) await admin.query(`DROP ROLE "${role}"`);
       await admin.end();
     },
   };
