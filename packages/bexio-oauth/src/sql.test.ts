@@ -53,11 +53,19 @@ describe("migrations", () => {
   });
 
   it("appends a migration's token-role part only when tokenRole is set", async () => {
-    const [plain] = await migrations();
-    const [withToken] = await migrations({ tokenRole: "bexio_token" });
-    expect(plain!.sql).not.toContain("bexio_token");
-    expect(withToken!.sql.startsWith(plain!.sql.trimEnd())).toBe(true);
-    expect(withToken!.sql).toContain("CREATE ROLE bexio_token LOGIN");
+    const plain = await migrations();
+    const withToken = await migrations({ tokenRole: "bexio_token" });
+    for (const [i, m] of MIGRATIONS.entries()) {
+      // Without a token role, no SQL may mention one: the role wouldn't exist.
+      expect(m.sql).not.toContain("bexio_token");
+      if (!m.tokenRoleSql) {
+        expect(withToken[i]).toEqual(plain[i]);
+        continue;
+      }
+      expect(m.tokenRoleSql).toContain("bexio_token");
+      expect(withToken[i]!.sql.startsWith(plain[i]!.sql.trimEnd())).toBe(true);
+    }
+    expect(withToken[0]!.sql).toContain("CREATE ROLE bexio_token LOGIN");
   });
 
   it("names every table with its schema, so no migration depends on search_path", () => {
@@ -118,6 +126,13 @@ describe("migrations", () => {
       { schema: "Tokens" },
       { storeRole: "store'; DROP ROLE postgres; --" },
       { storeRole: "pg_monitor" },
+      { storeRole: "public" },
+      { tokenRole: "public" },
+      { storeRole: "none" },
+      { tokenRole: "current_user" },
+      { storeRole: "postgres" },
+      { storeRole: "authenticated" },
+      { tokenRole: "service_role" },
       { tokenRole: "" },
       { storeRole: "same", tokenRole: "same" },
     ]) {

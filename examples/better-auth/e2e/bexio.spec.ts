@@ -296,7 +296,7 @@ test("a cancelled connect returns with the error code and saves nothing", async 
   await expect(page.getByTestId("workspace-a")).toContainText("Not connected.");
 });
 
-test("the grant store's role reaches its two tables and nothing else", async () => {
+test("the grant store's role reaches its two tables and no other table", async () => {
   const store = new pg.Pool({ connectionString: e2eEnv.BEXIO_DATABASE_URL });
   try {
     const denied = await store.query('SELECT 1 FROM "user"').then(

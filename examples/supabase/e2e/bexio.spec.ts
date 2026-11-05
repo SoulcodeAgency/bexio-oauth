@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { expect, test, type Locator } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
+import { migrations } from "@soulcode/bexio-oauth";
 import pg from "pg";
 import { e2eEnv } from "../playwright.config";
 
@@ -78,10 +79,16 @@ test("connect Bexio for a Supabase user; the token tables aren't reachable throu
   await expect(page.getByTestId("grants")).toHaveText("Not connected.");
 });
 
-test("the migration applies twice in a row", async () => {
+test("the migration is the CLI's current output, and applies twice in a row", async () => {
   const dir = new URL("../supabase/migrations/", import.meta.url);
   const [file] = readdirSync(dir).filter((f) => f.endsWith("_bexio_oauth.sql"));
   const sql = readFileSync(new URL(file, dir), "utf8");
+  // Unedited `npx @soulcode/bexio-oauth sql` output: regenerate it when the
+  // library's SQL changes.
+  const cli = (await migrations())
+    .map((m) => `-- ${m.name}\n${m.sql.trimEnd()}\n`)
+    .join("\n");
+  expect(sql.replace(/\r\n/g, "\n")).toBe(cli);
   // `supabase start` applied it once; twice more must change nothing.
   await admin.query(sql);
   await admin.query(sql);

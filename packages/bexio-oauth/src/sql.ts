@@ -4,7 +4,7 @@ import {
   DEFAULT_SCHEMA,
   DEFAULT_STORE_ROLE,
   DEFAULT_TOKEN_ROLE,
-  checkName,
+  checkRole,
   checkSchema,
   quoteName,
 } from "./names.js";
@@ -36,10 +36,15 @@ export interface MigrationSource extends Migration {
   tokenRoleSql?: string;
 }
 
+type DefaultName =
+  typeof DEFAULT_SCHEMA | typeof DEFAULT_STORE_ROLE | typeof DEFAULT_TOKEN_ROLE;
+
 // The default names, as string literals (e.g. role lookups in pg_roles) and
 // as identifiers. One pass, so a replacement is never replaced again.
-const NAMES =
-  /'(bexio_oauth|bexio_store|bexio_token)'|\b(bexio_oauth|bexio_store|bexio_token)\b/g;
+const DEFAULTS = [DEFAULT_SCHEMA, DEFAULT_STORE_ROLE, DEFAULT_TOKEN_ROLE].join(
+  "|",
+);
+const NAMES = new RegExp(`'(${DEFAULTS})'|\\b(${DEFAULTS})\\b`, "g");
 
 /**
  * Replaces the default names in `sql` with `names` (keyed by default name).
@@ -49,11 +54,11 @@ const NAMES =
  */
 export function renameDefaults(
   sql: string,
-  names: Record<string, string>,
+  names: Record<DefaultName, string>,
 ): string {
   return sql.replace(NAMES, (match, literal?: string, identifier?: string) => {
-    if (literal) return `'${names[literal]}'`;
-    const name = names[identifier!]!;
+    if (literal) return `'${names[literal as DefaultName]}'`;
+    const name = names[identifier as DefaultName];
     return name === identifier ? match : quoteName(name);
   });
 }
@@ -70,14 +75,14 @@ export async function migrations(
   options: MigrationOptions = {},
 ): Promise<Migration[]> {
   const schema = checkSchema(options.schema ?? DEFAULT_SCHEMA);
-  const storeRole = checkName(
+  const storeRole = checkRole(
     options.storeRole ?? DEFAULT_STORE_ROLE,
     "storeRole",
   );
   const tokenRole =
     options.tokenRole === undefined
       ? undefined
-      : checkName(options.tokenRole, "tokenRole");
+      : checkRole(options.tokenRole, "tokenRole");
   if (tokenRole === storeRole) {
     throw new BexioOAuthError(
       "invalid_config",
@@ -85,7 +90,7 @@ export async function migrations(
     );
   }
 
-  const names: Record<string, string> = {
+  const names: Record<DefaultName, string> = {
     [DEFAULT_SCHEMA]: schema,
     [DEFAULT_STORE_ROLE]: storeRole,
     [DEFAULT_TOKEN_ROLE]: tokenRole ?? DEFAULT_TOKEN_ROLE,

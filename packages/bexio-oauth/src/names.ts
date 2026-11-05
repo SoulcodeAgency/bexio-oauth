@@ -37,5 +37,34 @@ export function checkSchema(value: string): string {
   return value;
 }
 
+// Postgres reads `public` (even quoted) as PUBLIC, every role, and refuses
+// `none`; `current_user` and friends name the session's role. The rest are
+// the admin and the API roles of hosted platforms (Supabase), which the
+// setup revokes. The SQL also refuses any existing role that isn't a plain
+// login role; this catches the common mistakes before any SQL runs.
+const RESERVED_ROLES = new Set([
+  "public",
+  "none",
+  "current_user",
+  "current_role",
+  "session_user",
+  "postgres",
+  "anon",
+  "authenticated",
+  "service_role",
+  "authenticator",
+]);
+
+/** `checkName`, and the role must be a dedicated one. */
+export function checkRole(value: string, option: string): string {
+  if (RESERVED_ROLES.has(checkName(value, option))) {
+    throw new BexioOAuthError(
+      "invalid_config",
+      `${option} must be a dedicated role, not ${value}`,
+    );
+  }
+  return value;
+}
+
 /** A checked name as a quoted identifier. */
 export const quoteName = (name: string) => `"${name}"`;

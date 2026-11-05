@@ -10,6 +10,7 @@ import {
 import pg from "pg";
 import type { MockBexio } from "mock-bexio";
 import {
+  migrations,
   postgresStore,
   type GrantUpsert,
   type SqlClient,
@@ -369,6 +370,38 @@ describe.skipIf(!hasDatabase)("postgres", () => {
             tx.query(`SELECT 1 FROM ${db.table("bexio_connections")}`),
           ),
         ).toBe("42501");
+      } finally {
+        await tx.query("ROLLBACK");
+        tx.release();
+      }
+    });
+
+    it("the SQL refuses an existing role of the chosen name unless it is a plain login role", async () => {
+      const id = db.schema.slice(2, 14);
+      const schema = `t_${id}_preexisting`;
+      const cases: [string, string, string | null][] = [
+        ["plain", "LOGIN PASSWORD 'x'", null], // what a user may pre-create
+        ["nologin", "NOLOGIN", "P0001"],
+        ["bypass", "LOGIN BYPASSRLS", "P0001"],
+        ["createrole", "LOGIN CREATEROLE", "P0001"],
+        ["member", "LOGIN IN ROLE pg_read_all_data", "P0001"],
+      ];
+      const tx = await db.admin.connect();
+      try {
+        await tx.query("BEGIN");
+        for (const [suffix, attributes, expected] of cases) {
+          const role = `t_${id}_${suffix}`;
+          await tx.query(`CREATE ROLE "${role}" ${attributes}`);
+          for (const options of [
+            { schema, storeRole: role },
+            { schema, storeRole: `${role}_s`, tokenRole: role },
+          ]) {
+            await tx.query("SAVEPOINT attempt");
+            const [m] = await migrations(options);
+            expect(await sqlState(tx.query(m!.sql)), suffix).toBe(expected);
+            await tx.query("ROLLBACK TO SAVEPOINT attempt");
+          }
+        }
       } finally {
         await tx.query("ROLLBACK");
         tx.release();

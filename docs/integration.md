@@ -73,27 +73,27 @@ Runtime dependencies: [`openid-client`](https://github.com/panva/openid-client) 
 
 ## 4. Database setup
 
-The library uses **two tables**: `bexio_connections` (the tokens, one row per Bexio identity) and `bexio_grants` (one row per owner of a connection). They live in their own schema, **`bexio_oauth`**, and your app reaches them through its own login role, **`bexio_store`**, which can reach those two tables and nothing else. Runtimes that only use tokens can get an even narrower role, **`bexio_token`** ([below](#runtimes-that-only-use-tokens-the-token-role)). You create all of it with your own migration tool. The library never runs migrations itself.
+The library uses **two tables**: `bexio_connections` (the tokens, one row per Bexio identity) and `bexio_grants` (one row per owner of a connection). They live in their own schema, **`bexio_oauth`**, and your app reaches them through its own login role, **`bexio_store`**, which can reach those two tables and no other table. Runtimes that only use tokens can get an even narrower role, **`bexio_token`** ([below](#runtimes-that-only-use-tokens-the-token-role)). You create all of it with your own migration tool. The library never runs migrations itself.
 
 ### What the SQL sets up
 
 `npx @soulcode/bexio-oauth sql` prints this setup. It is the one the library is built and tested for:
 
-| Object                        | What it is                                                                                                                                                                                                                                                                                               |
-| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| schema `bexio_oauth`          | Holds the two tables. Not `public`, so platform APIs that serve `public` (Supabase's Data API) don't serve it.                                                                                                                                                                                           |
-| role `bexio_store`            | `LOGIN NOINHERIT`, created without a password ([set one](#passwords-and-connection-strings)). `USAGE` on the schema, `SELECT, INSERT, UPDATE, DELETE` on the two tables, nothing else. `postgresStore` connects as it.                                                                                   |
-| revokes                       | `PUBLIC`, and Supabase's `anon`, `authenticated` and `service_role` where they exist, get no access to the schema or the tables.                                                                                                                                                                         |
-| row-level security            | On for both tables, with a policy per role, named after it. The roles are neither the tables' owner nor `BYPASSRLS`, so RLS without a policy would deny them every row; any other role that is ever granted access sees none (the owner, superusers and `BYPASSRLS` roles excepted, as always with RLS). |
-| role `bexio_token` (optional) | `--token-role bexio_token`: reads both tables and updates only a connection's token, lock, role and status columns.                                                                                                                                                                                      |
+| Object                        | What it is                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| schema `bexio_oauth`          | Holds the two tables. Not `public`, so platform APIs that serve `public` (Supabase's Data API) don't serve it.                                                                                                                                                                                                                                                                                                                                                    |
+| role `bexio_store`            | `LOGIN NOINHERIT`, created without a password ([set one](#passwords-and-connection-strings)). `USAGE` on the schema, `SELECT, INSERT, UPDATE, DELETE` on the two tables, no other grants. `postgresStore` connects as it. If a role of that name already exists, it is used only if it is a plain login role (not superuser, `BYPASSRLS`, `CREATEROLE`, `CREATEDB` or `REPLICATION`, and a member of no other role); otherwise the migration stops with an error. |
+| revokes                       | `PUBLIC`, and Supabase's `anon`, `authenticated` and `service_role` where they exist, get no access to the schema or the tables.                                                                                                                                                                                                                                                                                                                                  |
+| row-level security            | On for both tables, with a policy per role, named after it. The roles are neither the tables' owner nor `BYPASSRLS`, so RLS without a policy would deny them every row; any other role that is ever granted access sees none (the owner, superusers and `BYPASSRLS` roles excepted, as always with RLS).                                                                                                                                                          |
+| role `bexio_token` (optional) | `--token-role bexio_token`: reads both tables and updates only a connection's token, lock, role and status columns.                                                                                                                                                                                                                                                                                                                                               |
 
 What it protects against:
 
-- **A leaked server environment gives away two tables of ciphertext, not your database.** The credentials in your app's env can read the encrypted token rows and nothing else: no other table, no other schema, and they don't bypass RLS. Without the keyring ([§5](#encryption-keys)), which never lives in the database, the rows are useless.
+- **A leaked server environment gives away two tables of ciphertext, not your database.** The credentials in your app's env can read the encrypted token rows and no other table, in no other schema, and they don't bypass RLS. Without the keyring ([§5](#encryption-keys)), which never lives in the database, the rows are useless. What Postgres gives every role by default stays: connecting, reading the system catalogs, temporary tables, and calling functions that `PUBLIC` may execute ([harden those](#hardening-the-rest-of-the-database) if your database has sensitive ones).
 - **The service-role key gets nothing.** The schema isn't exposed through Supabase's Data API, and `service_role` has no privileges on it, even though it bypasses RLS.
 - **API roles can't read the schema.** `anon` and `authenticated` have no `USAGE` on it; a signed-in user's JWT reaches nothing.
 - **Correctness never depends on `search_path`.** The store names the schema in every statement, so it works through transaction-mode poolers that don't apply role settings, and no object of the same name earlier in the path can shadow the tables.
-- **With the token role:** a leaked credential of a runtime that only uses tokens can't add or delete grants or connections, and can't change whose tokens a connection holds (the identity columns). It can still damage what it may write: overwrite or invalidate the tokens (everyone then reconnects), mark a connection `reauth_required`, or change its stored `role`. Don't treat `role` as authorization for anything a token-role runtime shouldn't be able to grant itself.
+- **With the token role:** a leaked credential of a runtime that only uses tokens can't add or delete grants or connections, and can't change whose tokens a connection holds (the identity columns). It can still damage what it may write: overwrite or invalidate the tokens (everyone then reconnects), mark a connection `reauth_required`, change its stored `role`, or hold row locks so refreshes wait. Don't treat `role` as authorization for anything a token-role runtime shouldn't be able to grant itself.
 
 ### The CLI
 
@@ -101,7 +101,7 @@ The package ships its schema as numbered SQL files and a small command that prin
 
 ```bash
 npx @soulcode/bexio-oauth sql                            # schema, tables, bexio_store role
-npx @soulcode/bexio-oauth sql --token-role bexio_token   # … plus the token role (recommended, see below)
+npx @soulcode/bexio-oauth sql --token-role bexio_token   # … plus the token role (recommended for token-only runtimes)
 npx @soulcode/bexio-oauth sql --from 2                   # only migrations 0002 onwards (for upgrades)
 npx @soulcode/bexio-oauth keygen                         # a new random 32-byte encryption key (base64url)
 ```
@@ -113,7 +113,7 @@ npx @soulcode/bexio-oauth keygen                         # a new random 32-byte 
 | `--token-role <name>` | none          | Also create the token role. Conventionally `bexio_token`.                                                                     |
 | `--from <n>`          | `1`           | Only migration `<n>` onwards. Combine with the same names you used before.                                                    |
 
-Names must be lowercase Postgres identifiers (`a-z`, `0-9`, `_`, at most 63 characters, not starting with a digit or `pg_`); anything else fails before any SQL is printed. `migrations({ schema, storeRole, tokenRole })` returns the same SQL in code.
+Names must be lowercase Postgres identifiers (`a-z`, `0-9`, `_`, at most 63 characters, not starting with a digit or `pg_`). Roles can't be `public` (Postgres reads it as every role), `none`, `current_user`, `current_role`, `session_user`, `postgres`, or Supabase's `anon`, `authenticated`, `service_role` and `authenticator`. Anything else fails before any SQL is printed. `migrations({ schema, storeRole, tokenRole })` returns the same SQL in code.
 
 What it is for:
 
@@ -125,8 +125,8 @@ What it is for:
   npx @soulcode/bexio-oauth sql --token-role bexio_token > supabase/migrations/20261024120000_bexio_oauth.sql
   # Plain SQL migrations (dbmate, node-pg-migrate in SQL mode, Flyway, …)
   npx @soulcode/bexio-oauth sql --token-role bexio_token > db/migrations/20261024120000_bexio_oauth.sql
-  # Or apply directly
-  npx @soulcode/bexio-oauth sql --token-role bexio_token | psql "$DATABASE_URL"
+  # Or apply directly, in one transaction that stops at the first error
+  npx @soulcode/bexio-oauth sql --token-role bexio_token | psql -v ON_ERROR_STOP=1 -1 "$DATABASE_URL"
   ```
 
 - **It is idempotent.** The output applies twice in a row without error: schema, roles, revokes, grants, policies and tables alike. Roles are cluster-wide and survive a database reset, so they are created only if missing.
@@ -148,7 +148,7 @@ ALTER ROLE bexio_store PASSWORD '<long random value>';
 ALTER ROLE bexio_token PASSWORD '<another one>';   -- if you created it
 ```
 
-For local development a seed file is fine (the [Supabase example](../examples/supabase/supabase/seed.sql) does that). Then point your app at the role:
+For local development a seed file is fine (the [Supabase example](../examples/supabase/supabase/seed.sql) does that), as long as nothing applies it to a hosted database: Supabase also runs `supabase/seed.sql` on preview branches and on `db push --include-seed`, which would give them the committed password. Then point your app at the role:
 
 ```bash
 # Plain Postgres
@@ -168,7 +168,15 @@ The role's default `search_path` doesn't include `bexio_oauth`, and doesn't need
 ALTER ROLE bexio_store SET search_path = bexio_oauth;
 ```
 
-If your app also needs a database login for its own tables (an auth framework, your domain data), give that its own connection. The store's role can't read them, and your app's role doesn't need the tokens.
+If your app also needs a database login for its own tables (an auth framework, your domain data), give that its own connection. The store's role can't read them, and your app's role doesn't need the tokens. The store's statements are short and single, so a small pool (`max: 3`) is plenty and keeps the connection count per process low.
+
+### Hardening the rest of the database
+
+The setup locks down its own schema; it doesn't change what Postgres grants `PUBLIC` elsewhere, which every role, the store's included, keeps. Worth a look on any database that holds more than the tokens:
+
+- **PostgreSQL 14 and older:** every role may create objects in `public`. Revoke it: `REVOKE CREATE ON SCHEMA public FROM PUBLIC;` (the default since 15).
+- **Functions:** every role may execute every function unless revoked. Revoke `EXECUTE ... FROM PUBLIC` on `SECURITY DEFINER` functions the store's role has no business calling.
+- **Shared clusters:** every role may connect to every database. `REVOKE CONNECT ON DATABASE <other> FROM PUBLIC` where other databases live on the same cluster.
 
 ### Runtimes that only use tokens: the token role
 
@@ -227,9 +235,10 @@ and pass the schema to the store: `postgresStore(pool, { schema: "bexio_oauth_bi
 
 ### Supabase
 
-- **Migration:** `npx @soulcode/bexio-oauth sql --token-role bexio_token > supabase/migrations/<timestamp>_bexio_oauth.sql`. It needs no Supabase-specific edits: it revokes `anon`, `authenticated` and `service_role` because they exist, and enables RLS with policies for your roles only.
-- **Passwords:** once per project, in the SQL editor (`ALTER ROLE bexio_store PASSWORD '…'`). Locally, put it in `supabase/seed.sql`, which runs after the migrations on the first `supabase start` and on every `supabase db reset`.
+- **Migration:** `npx @soulcode/bexio-oauth sql > supabase/migrations/<timestamp>_bexio_oauth.sql`, with `--token-role bexio_token` if a runtime only uses tokens. It needs no Supabase-specific edits: it revokes `anon`, `authenticated` and `service_role` because they exist, and enables RLS with policies for your roles only.
+- **Passwords:** once per project, in the SQL editor (`ALTER ROLE bexio_store PASSWORD '…'`). Locally, put it in `supabase/seed.sql`, which runs after the migrations on the first `supabase start` and on every `supabase db reset`. Supabase also seeds preview branches from it, so with branching enabled, keep the password out of the seed and set each branch's yourself.
 - **Connection:** through the Supavisor **transaction pooler** (port 6543) as `bexio_store.<project-ref>`, or the direct connection as `bexio_store`. Custom `LOGIN` roles need no pooler registration. Not supabase-js: the library needs real SQL for its atomic refresh lock.
+- **Pool size:** Supavisor's pool size applies per role, so `bexio_store` and `bexio_token` each get a pool next to your app's own. On small compute, budget roles × pool size within `max_connections`, or lower the pool size in the dashboard's database settings.
 - **Data API:** keep `bexio_oauth` out of the exposed schemas (Project settings → Data API → Exposed schemas). It isn't exposed unless you add it.
 
 ### `SqlClient`
@@ -532,7 +541,7 @@ All errors are `BexioOAuthError` with a `code` (`isBexioOAuthError(err, "reauth_
 - **Keys** live in your config, never in the database. Anyone holding both a database dump and the keyring can read the tokens; keep them apart.
 - **The OIDC protocol** is handled by `openid-client` (OpenID Certified relying-party library): PKCE S256, state, nonce, ID-token signature, issuer and audience checks.
 - **The flow cookie** is encrypted (JWE, with a key derived from your keyring via HKDF), HttpOnly, SameSite=Lax, path-scoped, 10 minutes, deleted on use, and `Secure` whenever `redirectUri` is https. A plain-http `redirectUri` is refused unless its host is loopback, so the cookie never travels unprotected to a real host.
-- **Database access:** least privilege by default (§4). The tables live in their own schema; your app connects as `bexio_store`, which reaches those two tables and nothing else, and runtimes that only use tokens as `bexio_token`, which can't create or delete grants or change a connection's identity (it can still overwrite tokens, status and role, see §4). `PUBLIC` and platform API roles get nothing, and RLS denies every role without a policy except the tables' owner and `BYPASSRLS` roles. A leaked app credential exposes ciphertext, not your database.
+- **Database access:** least privilege by default (§4). The tables live in their own schema; your app connects as `bexio_store`, which reaches those two tables and no other table, and runtimes that only use tokens as `bexio_token`, which can't create or delete grants or change a connection's identity (it can still overwrite tokens, status and role, see §4). `PUBLIC` and platform API roles get nothing, and RLS denies every role without a policy except the tables' owner and `BYPASSRLS` roles. A leaked app credential exposes ciphertext, not your database.
 - **Permissions:** an access token acts with the connecting Bexio user's rights in that company. If that user leaves the company or loses rights, calls start failing, and a different user has to reconnect.
 
 ## 13. Data model
@@ -586,7 +595,7 @@ Why the library looks the way it does. If any of these change, the reasoning is 
 - **One connection per Bexio identity, shared by its owners.** Bexio keeps one valid refresh token chain per Bexio user, company and OAuth client; a new authorization invalidates the refresh tokens issued before it, and a revocation ends the chain ([§2](#why-owners-of-the-same-identity-share-a-connection)). Tokens therefore live once per identity, in the connection, and grants only link owners to it. That gives exactly one refresh per connection at a time across all owners and instances, one stored rotation, and a revocation only when the last owner leaves. Connections are keyed by (company, user), the pair Bexio issues tokens and chains for: in a live test, one Bexio user's authorizations for two companies kept separate chains, and both refreshed after the later one. Revocation, in contrast, ends all of the user's chains for the client, which is why `disconnect` only revokes for a user's last active connection.
 - **Two tables, no membership model.** A connection already holds company, user and role, so with its grants it doubles as the membership record. There are no separate company or member tables to keep in sync. Apps that need their own tenant table own it.
 - **Opaque `ownerId`.** It fits any tenancy model. A grant per owner keeps disconnects local, even when two owners connect the same Bexio account.
-- **Least privilege by default.** Token rows are the most sensitive data an app holds about Bexio, so the shipped SQL keeps them in their own schema behind a role that can reach nothing else, rather than leaving every app to work that out. The store names the schema in every statement instead of relying on `search_path`, which transaction-mode poolers don't apply reliably and which other objects can shadow. Grants are written per migration rather than with `ALTER DEFAULT PRIVILEGES`, which depends on which role runs the migration.
+- **Least privilege by default.** Token rows are the most sensitive data an app holds about Bexio, so the shipped SQL keeps them in their own schema behind a role that can reach no other table, rather than leaving every app to work that out. The store names the schema in every statement instead of relying on `search_path`, which transaction-mode poolers don't apply reliably and which other objects can shadow. Grants are written per migration rather than with `ALTER DEFAULT PRIVILEGES`, which depends on which role runs the migration.
 - **Plain Postgres, no ORM.** Two small tables don't justify an ORM's dependency and migration workflow, which would compete with the app's own. Single-statement operations keep the lock atomic and work through any driver or pooler; where one statement's snapshot isn't enough (the last disconnect), a foreign key makes Postgres enforce the invariant.
 - **No custom protocol or crypto code.** `openid-client` and `jose` cover OIDC and encryption; what's left is storage, refresh coordination and Bexio specifics.
 - **No env reads inside the library.** Explicit config is easier to test and to reason about, and works the same in every runtime.

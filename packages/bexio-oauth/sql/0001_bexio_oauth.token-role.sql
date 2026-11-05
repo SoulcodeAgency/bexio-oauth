@@ -9,10 +9,20 @@
 -- Set its password out of band too:
 --   ALTER ROLE bexio_token PASSWORD '…';
 
+-- Created like the store role, and refused like it when an existing role of
+-- that name is privileged or a member of other roles.
 DO $$
+DECLARE
+  existing pg_roles%ROWTYPE;
 BEGIN
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'bexio_token') THEN
+  SELECT * INTO existing FROM pg_roles WHERE rolname = 'bexio_token';
+  IF NOT FOUND THEN
     CREATE ROLE bexio_token LOGIN NOINHERIT;
+  ELSIF NOT existing.rolcanlogin OR existing.rolsuper OR existing.rolbypassrls
+    OR existing.rolcreaterole OR existing.rolcreatedb OR existing.rolreplication
+    OR EXISTS (SELECT FROM pg_auth_members WHERE member = existing.oid) THEN
+    RAISE EXCEPTION 'role % exists but is not a plain login role', 'bexio_token'
+      USING HINT = 'Choose another role name, or drop the role and run this again.';
   END IF;
 END $$;
 

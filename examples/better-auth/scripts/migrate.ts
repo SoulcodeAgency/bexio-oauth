@@ -17,11 +17,16 @@ const store = new URL(bexioUrl);
 const storeRole = decodeURIComponent(store.username);
 for (const m of await migrations({ storeRole })) await pool.query(m.sql);
 
-// Local development only: a real app sets the password once per environment,
-// out of band, and never from code or a migration.
-await pool.query(
-  `ALTER ROLE ${escapeIdentifier(storeRole)} PASSWORD ${escapeLiteral(decodeURIComponent(store.password))}`,
-);
+// Local development only, so only against a local database: a real app sets
+// the password once per environment, out of band, and never from code or a
+// migration (the statement would also land in the server's DDL log).
+if (["localhost", "127.0.0.1", "[::1]"].includes(store.hostname)) {
+  await pool.query(
+    `ALTER ROLE ${escapeIdentifier(storeRole)} PASSWORD ${escapeLiteral(decodeURIComponent(store.password))}`,
+  );
+} else {
+  console.log(`Not a local database: set ${storeRole}'s password yourself.`);
+}
 
 const { runMigrations } = await getMigrations(
   betterAuth({ database: pool, secret: "migrations-only-migrations-only" })
