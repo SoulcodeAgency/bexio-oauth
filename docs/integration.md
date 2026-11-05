@@ -62,7 +62,7 @@ Each connection records the Bexio user's **role** in that company: `admin` or `m
 ## 3. Requirements and install
 
 - Node.js ≥ 24, ESM.
-- PostgreSQL (any host: self-hosted, Supabase, or another managed Postgres) reached through a driver that matches [`SqlClient`](#sqlclient).
+- PostgreSQL 13 or later (any host: self-hosted, Supabase, or another managed Postgres) reached through a driver that matches [`SqlClient`](#sqlclient). Setting it up once needs a role that may create schemas and roles ([§4](#4-database-setup)); your app then runs with a role that can't.
 - A Bexio OAuth app (client id and secret) from the Bexio developer portal, with your callback URL registered as a redirect URI.
 
 ```bash
@@ -73,17 +73,47 @@ Runtime dependencies: [`openid-client`](https://github.com/panva/openid-client) 
 
 ## 4. Database setup
 
-The library uses **two tables**: `bexio_connections` (the tokens, one row per Bexio identity) and `bexio_grants` (one row per owner of a connection). You create them with your own migration tool. The library never runs migrations itself.
+The library uses **two tables**: `bexio_connections` (the tokens, one row per Bexio identity) and `bexio_grants` (one row per owner of a connection). They live in their own schema, **`bexio_oauth`**, and your app reaches them through its own login role, **`bexio_store`**, which can reach those two tables and no other table. Runtimes that only use tokens can get an even narrower role, **`bexio_token`** ([below](#runtimes-that-only-use-tokens-the-token-role)). You create all of it with your own migration tool. The library never runs migrations itself.
+
+### What the SQL sets up
+
+`npx @soulcode/bexio-oauth sql` prints this setup. It is the one the library is built and tested for:
+
+| Object                        | What it is                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| schema `bexio_oauth`          | Holds the two tables. Not `public`, so platform APIs that serve `public` (Supabase's Data API) don't serve it.                                                                                                                                                                                                                                                                                                                                                    |
+| role `bexio_store`            | `LOGIN NOINHERIT`, created without a password ([set one](#passwords-and-connection-strings)). `USAGE` on the schema, `SELECT, INSERT, UPDATE, DELETE` on the two tables, no other grants. `postgresStore` connects as it. If a role of that name already exists, it is used only if it is a plain login role (not superuser, `BYPASSRLS`, `CREATEROLE`, `CREATEDB` or `REPLICATION`, and a member of no other role); otherwise the migration stops with an error. |
+| revokes                       | `PUBLIC`, and Supabase's `anon`, `authenticated` and `service_role` where they exist, get no access to the schema or the tables.                                                                                                                                                                                                                                                                                                                                  |
+| row-level security            | On for both tables, with a policy per role, named after it. The roles are neither the tables' owner nor `BYPASSRLS`, so RLS without a policy would deny them every row; any other role that is ever granted access sees none (the owner, superusers and `BYPASSRLS` roles excepted, as always with RLS).                                                                                                                                                          |
+| role `bexio_token` (optional) | `--token-role bexio_token`: reads both tables and updates only a connection's token, lock, role and status columns.                                                                                                                                                                                                                                                                                                                                               |
+
+What it protects against:
+
+- **A leaked server environment gives away two tables of ciphertext, not your database.** The credentials in your app's env can read the encrypted token rows and no other table, in no other schema, and they don't bypass RLS. Without the keyring ([§5](#encryption-keys)), which never lives in the database, the rows are useless. What Postgres gives every role by default stays: connecting, reading the system catalogs, temporary tables, and calling functions that `PUBLIC` may execute ([harden those](#hardening-the-rest-of-the-database) if your database has sensitive ones).
+- **The service-role key gets nothing.** The schema isn't exposed through Supabase's Data API, and `service_role` has no privileges on it, even though it bypasses RLS.
+- **API roles can't read the schema.** `anon` and `authenticated` have no `USAGE` on it; a signed-in user's JWT reaches nothing.
+- **Correctness never depends on `search_path`.** The store names the schema in every statement, so it works through transaction-mode poolers that don't apply role settings, and no object of the same name earlier in the path can shadow the tables.
+- **With the token role:** a leaked credential of a runtime that only uses tokens can't add or delete grants or connections, and can't change whose tokens a connection holds (the identity columns). It can still damage what it may write: overwrite or invalidate the tokens (everyone then reconnects), mark a connection `reauth_required`, change its stored `role`, or hold row locks so refreshes wait. Don't treat `role` as authorization for anything a token-role runtime shouldn't be able to grant itself.
 
 ### The CLI
 
 The package ships its schema as numbered SQL files and a small command that prints them:
 
 ```bash
-npx @soulcode/bexio-oauth sql              # all migrations, in order
-npx @soulcode/bexio-oauth sql --from 2     # only migrations 0002 onwards (for upgrades)
-npx @soulcode/bexio-oauth keygen           # a new random 32-byte encryption key (base64url)
+npx @soulcode/bexio-oauth sql                            # schema, tables, bexio_store role
+npx @soulcode/bexio-oauth sql --token-role bexio_token   # … plus the token role (recommended for token-only runtimes)
+npx @soulcode/bexio-oauth sql --from 2                   # only migrations 0002 onwards (for upgrades)
+npx @soulcode/bexio-oauth keygen                         # a new random 32-byte encryption key (base64url)
 ```
+
+| Option                | Default       | Notes                                                                                                                         |
+| --------------------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `--schema <name>`     | `bexio_oauth` | Pass the same name to `postgresStore(sql, { schema })`. `public` is refused: the revokes would lock your API roles out of it. |
+| `--store-role <name>` | `bexio_store` | The role `postgresStore` connects as.                                                                                         |
+| `--token-role <name>` | none          | Also create the token role. Conventionally `bexio_token`.                                                                     |
+| `--from <n>`          | `1`           | Only migration `<n>` onwards. Combine with the same names you used before.                                                    |
+
+Names must be lowercase Postgres identifiers (`a-z`, `0-9`, `_`, at most 63 characters, not starting with a digit or `pg_`). Roles can't be `public` (Postgres reads it as every role), `none`, `current_user`, `current_role`, `session_user`, `postgres`, or Supabase's `anon`, `authenticated`, `service_role` and `authenticator`. Anything else fails before any SQL is printed. `migrations({ schema, storeRole, tokenRole })` returns the same SQL in code.
 
 What it is for:
 
@@ -92,28 +122,124 @@ What it is for:
 
   ```bash
   # Supabase CLI
-  npx @soulcode/bexio-oauth sql > supabase/migrations/20261024120000_bexio_oauth.sql
+  npx @soulcode/bexio-oauth sql --token-role bexio_token > supabase/migrations/20261024120000_bexio_oauth.sql
   # Plain SQL migrations (dbmate, node-pg-migrate in SQL mode, Flyway, …)
-  npx @soulcode/bexio-oauth sql > db/migrations/20261024120000_bexio_oauth.sql
-  # Or apply directly
-  npx @soulcode/bexio-oauth sql | psql "$DATABASE_URL"
+  npx @soulcode/bexio-oauth sql --token-role bexio_token > db/migrations/20261024120000_bexio_oauth.sql
+  # Or apply directly, in one transaction that stops at the first error
+  npx @soulcode/bexio-oauth sql --token-role bexio_token | psql -v ON_ERROR_STOP=1 -1 "$DATABASE_URL"
   ```
 
-- **Upgrades are explicit.** When a new version adds a migration, the changelog says so, and `sql --from <n>` prints just the new part for your next migration file.
+- **It is idempotent.** The output applies twice in a row without error: schema, roles, revokes, grants, policies and tables alike. Roles are cluster-wide and survive a database reset, so they are created only if missing.
+- **Upgrades are explicit.** When a new version adds a migration, the changelog says so, and `sql --from <n>` (with the names you used) prints just the new part for your next migration file, including the grants and policies for anything it adds.
 - **`keygen`** saves you from hand-rolling a random key (see [§5](#encryption-keys)).
 
-The SQL files are also in the package at `node_modules/@soulcode/bexio-oauth/sql/` if you'd rather copy them by hand. The CLI is a convenience, not a requirement.
+Run the migration as a role that may create schemas and roles: the database owner, or `postgres` on Supabase. That role owns the tables; your app never uses it.
+
+The SQL files are also in the package at `node_modules/@soulcode/bexio-oauth/sql/`, written with the default names, if you'd rather copy them by hand: `0001_bexio_oauth.sql`, and `0001_bexio_oauth.token-role.sql` for the token role. The CLI is a convenience, not a requirement.
 
 `migrations()` returns the same SQL embedded in the library's JavaScript, not read from disk, so it works unchanged when your bundler inlines the library (for example in Next.js route handlers or server actions, without adding it to `serverExternalPackages`).
 
-### Supabase
+### Passwords and connection strings
 
-Connect through the pooler connection string (Project settings → Database), not supabase-js: the library needs real SQL for its atomic refresh lock. Then **enable row-level security on both tables and add no policies**. The `anon` and `authenticated` roles then can't read them, and only your server-side connection can.
+The roles are created **without a password**, so nobody can log in as them with password authentication yet (a `trust` entry in `pg_hba.conf`, common in local Docker setups, lets anyone in regardless). Set one per environment, out of band (a SQL console, your secret manager's rotation job), never in a migration file, where it would end up in version control:
 
 ```sql
-alter table public.bexio_connections enable row level security;
-alter table public.bexio_grants enable row level security;
+ALTER ROLE bexio_store PASSWORD '<long random value>';
+ALTER ROLE bexio_token PASSWORD '<another one>';   -- if you created it
 ```
+
+For local development a seed file is fine (the [Supabase example](../examples/supabase/supabase/seed.sql) does that), as long as nothing applies it to a hosted database: Supabase also runs `supabase/seed.sql` on preview branches and on `db push --include-seed`, which would give them the committed password. Then point your app at the role:
+
+```bash
+# Plain Postgres
+DATABASE_URL=postgres://bexio_store:<password>@db.example.com:5432/app
+# Supabase, transaction pooler (Supavisor): the user is <role>.<project-ref>
+DATABASE_URL=postgresql://bexio_store.<project-ref>:<password>@<pooler-host>:6543/postgres
+```
+
+```ts
+const pool = new Pool({ connectionString: process.env.DATABASE_URL }); // as bexio_store
+const store = postgresStore(pool); // tables in bexio_oauth; with --schema, pass { schema }
+```
+
+The role's default `search_path` doesn't include `bexio_oauth`, and doesn't need to: the store names the schema in every statement. If you query the tables by hand and want short names, you can add it yourself (optional, not emitted by the CLI):
+
+```sql
+ALTER ROLE bexio_store SET search_path = bexio_oauth;
+```
+
+If your app also needs a database login for its own tables (an auth framework, your domain data), give that its own connection. The store's role can't read them, and your app's role doesn't need the tokens. The store's statements are short and single, so a small pool (`max: 3`) is plenty and keeps the connection count per process low.
+
+### Hardening the rest of the database
+
+The setup locks down its own schema; it doesn't change what Postgres grants `PUBLIC` elsewhere, which every role, the store's included, keeps. Worth a look on any database that holds more than the tokens:
+
+- **PostgreSQL 14 and older:** every role may create objects in `public`. Revoke it: `REVOKE CREATE ON SCHEMA public FROM PUBLIC;` (the default since 15).
+- **Functions:** every role may execute every function unless revoked. Revoke `EXECUTE ... FROM PUBLIC` on `SECURITY DEFINER` functions the store's role has no business calling.
+- **Shared clusters:** every role may connect to every database. `REVOKE CONNECT ON DATABASE <other> FROM PUBLIC` where other databases live on the same cluster.
+
+### Runtimes that only use tokens: the token role
+
+`getAccessToken`, `listGrants` and `refreshIdle` never insert or delete. They read both tables and update a connection's tokens, its refresh lock and its status. The token role has exactly that:
+
+| Table               | `bexio_token` may                                                                                                                                                                                            |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `bexio_connections` | `SELECT`; `UPDATE` of `access_token`, `refresh_token`, `access_expires_at`, `refresh_expires_at`, `scope`, `role`, `status`, `refresh_locked_until`, `refresh_lock_token`, `last_refreshed_at`, `updated_at` |
+| `bexio_grants`      | `SELECT`                                                                                                                                                                                                     |
+
+With it, `callback`, `handleCallback`, `saveGrant` and `disconnect` fail with Postgres's `permission denied` (SQLSTATE `42501`), thrown as is (`start` never touches the database, but its flow can only finish in a runtime with `bexio_store`). Everything else works the same, refresh coordination included.
+
+**Recommended:** whenever a runtime only uses tokens (a cron job, a queue worker, a separate API service, a scheduled function), create the token role and give that runtime its credentials instead of `bexio_store`'s. Configure it like any other client (same keyring, same Bexio client); only the connection string differs:
+
+```ts
+// worker/bexio.ts: a runtime that only calls getAccessToken / refreshIdle
+export const bexio = createBexioOAuth({
+  ...sharedConfig, // clientId, clientSecret, redirectUri, scopes, keys
+  store: postgresStore(
+    new Pool({ connectionString: process.env.BEXIO_TOKEN_DATABASE_URL }),
+  ),
+});
+```
+
+Added it later? Apply `sql --token-role bexio_token` as a new migration: everything in it is idempotent. Several services that each should have their own login can get their own token roles the same way (`--token-role billing_bexio`, then `--token-role sync_bexio`): each role's policies are named after it, so adding one leaves the others' access intact.
+
+### Architecture examples
+
+**One app does everything** (connect UI, API calls and the `refreshIdle` cron in one deployment): one login, `bexio_store`. Nothing else to do.
+
+**A web app plus background runtimes.** The web app runs the connect flow and disconnects, so it holds `bexio_store`. Workers, cron jobs and other services only use tokens and hold `bexio_token`. A leaked worker secret then can't attach a Bexio account to anyone or delete connections:
+
+```mermaid
+flowchart LR
+    U["Browser"] -->|"connect, callback, disconnect"| W["Web app<br/>bexio_store"]
+    W --> S[("Postgres<br/>schema bexio_oauth")]
+    C["Cron: refreshIdle<br/>bexio_token"] --> S
+    Q["Queue worker: getAccessToken<br/>bexio_token"] --> S
+    A["Reporting service: getAccessToken<br/>its own token role"] --> S
+    W & C & Q & A -->|"Bearer access token"| B["Bexio API"]
+    K["Keyring<br/>(each runtime's secrets, never in the DB)"] -.-> W & C & Q & A
+```
+
+Every runtime needs the keyring too: it decrypts the tokens it reads and encrypts the ones it refreshes.
+
+**Runtimes that shouldn't hold any database login** (browsers, untrusted edge code, third-party integrations): don't hand them a role. Let a service that has one call `getAccessToken` and expose only what they need through your own authenticated API.
+
+**Several environments or apps on one Postgres cluster.** Roles are cluster-wide, so two databases on one cluster share one `bexio_store`, and one password, unless you name them apart. Give each environment its own roles, and each app sharing a database its own schema:
+
+```bash
+npx @soulcode/bexio-oauth sql --store-role bexio_store_staging --token-role bexio_token_staging
+npx @soulcode/bexio-oauth sql --schema bexio_oauth_billing --store-role bexio_store_billing
+```
+
+and pass the schema to the store: `postgresStore(pool, { schema: "bexio_oauth_billing" })`. Each environment also needs its own Bexio OAuth client ([§2](#why-owners-of-the-same-identity-share-a-connection)).
+
+### Supabase
+
+- **Migration:** `npx @soulcode/bexio-oauth sql > supabase/migrations/<timestamp>_bexio_oauth.sql`, with `--token-role bexio_token` if a runtime only uses tokens. It needs no Supabase-specific edits: it revokes `anon`, `authenticated` and `service_role` because they exist, and enables RLS with policies for your roles only.
+- **Passwords:** once per project, in the SQL editor (`ALTER ROLE bexio_store PASSWORD '…'`). Locally, put it in `supabase/seed.sql`, which runs after the migrations on the first `supabase start` and on every `supabase db reset`. Supabase also seeds preview branches from it, so with branching enabled, keep the password out of the seed and set each branch's yourself.
+- **Connection:** through the Supavisor **transaction pooler** (port 6543) as `bexio_store.<project-ref>`, or the direct connection as `bexio_store`. Custom `LOGIN` roles need no pooler registration. Not supabase-js: the library needs real SQL for its atomic refresh lock.
+- **Pool size:** Supavisor's pool size applies per role, so `bexio_store` and `bexio_token` each get a pool next to your app's own. On small compute, budget roles × pool size within `max_connections`, or lower the pool size in the dashboard's database settings.
+- **Data API:** keep `bexio_oauth` out of the exposed schemas (Project settings → Data API → Exposed schemas). It isn't exposed unless you add it.
 
 ### `SqlClient`
 
@@ -147,6 +273,7 @@ Every store operation is **one SQL statement**, so the library works with transa
 import { Pool } from "pg";
 import { createBexioOAuth, postgresStore } from "@soulcode/bexio-oauth";
 
+// Connects as bexio_store, which reaches the bexio_oauth schema only (§4).
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 export const bexio = createBexioOAuth({
@@ -165,7 +292,7 @@ export const bexio = createBexioOAuth({
 | `redirectUri`              | yes      | Must exactly match a redirect URI registered at Bexio. `https`, or plain `http` on a loopback host (`localhost`, `127.0.0.1`) for local development.        |
 | `scopes`                   | no       | Bexio API scopes. Always added: `openid profile email company_profile offline_access`. `offline_access` is what makes background refresh possible.          |
 | `keys`                     | yes      | Encryption keyring, see below.                                                                                                                              |
-| `store`                    | yes      | `postgresStore(sqlClient)` or `memoryStore()` (tests only).                                                                                                 |
+| `store`                    | yes      | `postgresStore(sqlClient, { schema? })` (schema default `bexio_oauth`, see §4) or `memoryStore()` (tests only).                                             |
 | `issuer`, `apiBaseUrl`     | no       | Default to Bexio's production URLs. Override only to point at a mock in tests. Plain `http` is accepted only for loopback hosts (`localhost`, `127.0.0.1`). |
 | `refreshLockTtl`           | no       | Default and minimum `"30s"`. See [§10](#refresh-coordination).                                                                                              |
 | `defaultReturnTo`          | no       | Where `callback` redirects when it can't read `returnTo` from the flow cookie. Default `"/"`.                                                               |
@@ -306,7 +433,7 @@ Working setups live in [`examples/`](../examples) ([findings and how to run them
 | Example                                           | Auth framework                               | Sign in with Bexio                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Also shows                                                                                                                      |
 | ------------------------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | [`examples/better-auth`](../examples/better-auth) | Better Auth (`genericOAuth`, plain Postgres) | **Yes, e2e-tested.** Better Auth stores the provider tokens (refresh token included) on its `account` row; a `hooks.after` handler passes them to `saveGrant()` and clears that copy ([`lib/auth.ts`](../examples/better-auth/lib/auth.ts)).                                                                                                                                                                                                                                          | Connect Bexio for workspaces with `authorizeOwner`, a background job, the `refreshIdle` cron, reconnect after `reauth_required` |
-| [`examples/supabase`](../examples/supabase)       | Supabase Auth                                | **Yes, validated against live Bexio; not in the automated tests.** A custom OIDC provider (`custom:bexio`) hands `provider_token` / `provider_refresh_token` to [`app/auth/callback/route.ts`](../examples/supabase/app/auth/callback/route.ts), which passes them to `saveGrant()` and re-saves the session without them (Supabase keeps them in its JavaScript-readable cookie otherwise). Supabase Auth only accepts public HTTPS issuers, so this can't run against a local mock. | Connect Bexio for a Supabase user (e2e-tested), RLS on both tables                                                              |
+| [`examples/supabase`](../examples/supabase)       | Supabase Auth                                | **Yes, validated against live Bexio; not in the automated tests.** A custom OIDC provider (`custom:bexio`) hands `provider_token` / `provider_refresh_token` to [`app/auth/callback/route.ts`](../examples/supabase/app/auth/callback/route.ts), which passes them to `saveGrant()` and re-saves the session without them (Supabase keeps them in its JavaScript-readable cookie otherwise). Supabase Auth only accepts public HTTPS issuers, so this can't run against a local mock. | Connect Bexio for a Supabase user (e2e-tested), the `bexio_store` role and `bexio_oauth` schema through the pooler-ready setup  |
 
 Keep your auth framework from storing its own copy of the Bexio tokens where it can (the examples show how), so the library is the only place they live. A copy kept elsewhere also goes stale: the next login or connect of the same Bexio user invalidates it ([§2](#why-owners-of-the-same-identity-share-a-connection)). For the same reason, give the auth framework's Bexio provider the same OAuth client as the library: both run authorizations for the same app.
 
@@ -414,12 +541,12 @@ All errors are `BexioOAuthError` with a `code` (`isBexioOAuthError(err, "reauth_
 - **Keys** live in your config, never in the database. Anyone holding both a database dump and the keyring can read the tokens; keep them apart.
 - **The OIDC protocol** is handled by `openid-client` (OpenID Certified relying-party library): PKCE S256, state, nonce, ID-token signature, issuer and audience checks.
 - **The flow cookie** is encrypted (JWE, with a key derived from your keyring via HKDF), HttpOnly, SameSite=Lax, path-scoped, 10 minutes, deleted on use, and `Secure` whenever `redirectUri` is https. A plain-http `redirectUri` is refused unless its host is loopback, so the cookie never travels unprotected to a real host.
-- **Database access:** only your server needs it. On Supabase, enable RLS on both tables without policies (§4).
+- **Database access:** least privilege by default (§4). The tables live in their own schema; your app connects as `bexio_store`, which reaches those two tables and no other table, and runtimes that only use tokens as `bexio_token`, which can't create or delete grants or change a connection's identity (it can still overwrite tokens, status and role, see §4). `PUBLIC` and platform API roles get nothing, and RLS denies every role without a policy except the tables' owner and `BYPASSRLS` roles. A leaked app credential exposes ciphertext, not your database.
 - **Permissions:** an access token acts with the connecting Bexio user's rights in that company. If that user leaves the company or loses rights, calls start failing, and a different user has to reconnect.
 
 ## 13. Data model
 
-Simplified; the SQL files are authoritative.
+Simplified; the SQL files are authoritative. Both tables live in the `bexio_oauth` schema (or the one you chose with `--schema`); who may do what is in [§4](#what-the-sql-sets-up).
 
 `bexio_connections`, one row per Bexio identity:
 
@@ -452,7 +579,7 @@ Unique: `(bexio_company_id, bexio_user_id)`. Partial index on `last_refreshed_at
 
 Unique: `(owner_id, connection_id)` (also serves lookups by owner). Index on `connection_id` (does a connection have grants left?).
 
-Need to reference a grant from your own tables? Store the `owner_id` you chose (you already have it), or the grant `id` when you need a specific company. Foreign keys into `bexio_grants` are fine; the library never deletes rows except through `disconnect`. Don't reference `bexio_connections`: the last owner's disconnect deletes the connection.
+Need to reference a grant from your own tables? Store the `owner_id` you chose (you already have it), or the grant `id` when you need a specific company, as a plain column. Don't add foreign keys into `bexio_oauth`: your app's role has no access to the schema (it shouldn't), the library deletes grants through `disconnect`, and the last owner's disconnect deletes the connection.
 
 ## 14. Testing your app
 
@@ -468,6 +595,7 @@ Why the library looks the way it does. If any of these change, the reasoning is 
 - **One connection per Bexio identity, shared by its owners.** Bexio keeps one valid refresh token chain per Bexio user, company and OAuth client; a new authorization invalidates the refresh tokens issued before it, and a revocation ends the chain ([§2](#why-owners-of-the-same-identity-share-a-connection)). Tokens therefore live once per identity, in the connection, and grants only link owners to it. That gives exactly one refresh per connection at a time across all owners and instances, one stored rotation, and a revocation only when the last owner leaves. Connections are keyed by (company, user), the pair Bexio issues tokens and chains for: in a live test, one Bexio user's authorizations for two companies kept separate chains, and both refreshed after the later one. Revocation, in contrast, ends all of the user's chains for the client, which is why `disconnect` only revokes for a user's last active connection.
 - **Two tables, no membership model.** A connection already holds company, user and role, so with its grants it doubles as the membership record. There are no separate company or member tables to keep in sync. Apps that need their own tenant table own it.
 - **Opaque `ownerId`.** It fits any tenancy model. A grant per owner keeps disconnects local, even when two owners connect the same Bexio account.
+- **Least privilege by default.** Token rows are the most sensitive data an app holds about Bexio, so the shipped SQL keeps them in their own schema behind a role that can reach no other table, rather than leaving every app to work that out. The store names the schema in every statement instead of relying on `search_path`, which transaction-mode poolers don't apply reliably and which other objects can shadow. Grants are written per migration rather than with `ALTER DEFAULT PRIVILEGES`, which depends on which role runs the migration.
 - **Plain Postgres, no ORM.** Two small tables don't justify an ORM's dependency and migration workflow, which would compete with the app's own. Single-statement operations keep the lock atomic and work through any driver or pooler; where one statement's snapshot isn't enough (the last disconnect), a foreign key makes Postgres enforce the invariant.
 - **No custom protocol or crypto code.** `openid-client` and `jose` cover OIDC and encryption; what's left is storage, refresh coordination and Bexio specifics.
 - **No env reads inside the library.** Explicit config is easier to test and to reason about, and works the same in every runtime.
@@ -479,10 +607,10 @@ Everything the package exports. `test/docs.test.ts` fails if an export is missin
 | Export                                                                                                                         | Kind      | Purpose                                                                                                                                                                                                                                                             |
 | ------------------------------------------------------------------------------------------------------------------------------ | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `createBexioOAuth`                                                                                                             | function  | Creates the client (a `BexioOAuth`): `start`, `callback`, `handleCallback`, `saveGrant`, `getAccessToken`, `listGrants`, `disconnect`, `refreshIdle` (§6–§10). `start` takes `{ ownerId, returnTo? }` only; `refreshIdle` takes `{ idleFor, limit?, timeBudget? }`. |
-| `postgresStore`                                                                                                                | function  | Store on `bexio_connections` and `bexio_grants` over a `SqlClient` (§4).                                                                                                                                                                                            |
+| `postgresStore`                                                                                                                | function  | `postgresStore(sql, { schema? })`: store on `bexio_connections` and `bexio_grants` in `schema` (default `bexio_oauth`) over a `SqlClient`, schema-qualified in every statement (§4). An invalid schema name throws `invalid_config`.                                |
 | `memoryStore`                                                                                                                  | function  | In-memory store with the same semantics, for tests (§14).                                                                                                                                                                                                           |
 | `generateKey`                                                                                                                  | function  | A new random key for the keyring, as `keygen` prints it (§5).                                                                                                                                                                                                       |
-| `migrations`                                                                                                                   | function  | The shipped SQL migrations, as `sql` prints them (§4).                                                                                                                                                                                                              |
+| `migrations`                                                                                                                   | function  | `migrations({ schema?, storeRole?, tokenRole? })`: the shipped SQL migrations for those names, as `sql` prints them (§4). Invalid names throw `invalid_config`.                                                                                                     |
 | `mapClaims`                                                                                                                    | function  | Maps Bexio's claims to a `BexioIdentity` (used internally; handy in tests).                                                                                                                                                                                         |
 | `roleFromPermissions`                                                                                                          | function  | Maps a `/3.0/permissions` response to `admin` or `member` (§2).                                                                                                                                                                                                     |
 | `isBexioOAuthError`                                                                                                            | function  | Type guard, optionally for one `code` (§11).                                                                                                                                                                                                                        |
@@ -494,4 +622,5 @@ Everything the package exports. `test/docs.test.ts` fails if an export is missin
 | `Grant`, `GrantSelector`, `AccessToken`, `CallbackOptions`, `CallbackResult`, `ExternalTokens`                                 | types     | Inputs and results of the client methods.                                                                                                                                                                                                                           |
 | `RefreshIdleResult`                                                                                                            | type      | `{ refreshed, skipped, reauthRequired, failed, remaining }` from `refreshIdle`, counting connections (§9).                                                                                                                                                          |
 | `BexioIdentity`, `Role`, `Keyring`, `Duration`, `Migration`, `BexioOAuthErrorCode`                                             | types     | Supporting types.                                                                                                                                                                                                                                                   |
+| `PostgresStoreOptions`, `MigrationOptions`                                                                                     | types     | Options of `postgresStore` (`schema`) and `migrations` (`schema`, `storeRole`, `tokenRole`).                                                                                                                                                                        |
 | `SqlClient`, `GrantStore`, `ConnectionRecord`, `GrantRecord`, `GrantUpsert`, `ConnectionRefresh`, `GrantStatus`, `LockRequest` | types     | For writing your own store. Every method must be atomic on its own, and `deleteUnusedConnection` must never delete a connection a grant references, including one added concurrently (§10).                                                                         |
