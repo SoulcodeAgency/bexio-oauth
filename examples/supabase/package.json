@@ -28,6 +28,6 @@
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "mock-bexio": "*",
-    "supabase": "2.122.0"
+    "supabase": "3.0.0"
   }
 }
