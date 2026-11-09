@@ -56,7 +56,7 @@ test.describe.configure({ mode: "serial" });
 
 test.beforeEach(async () => {
   await db.query(
-    'TRUNCATE bexio_grants, bexio_connections, "session", "account", "verification", "user" CASCADE',
+    'TRUNCATE bexio_oauth.bexio_grants, bexio_oauth.bexio_connections, "session", "account", "verification", "user" CASCADE',
   );
 });
 
@@ -86,7 +86,7 @@ test("sign in with Bexio: the grant is saved, Better Auth keeps no tokens, disco
   const { rows: connections } = await db.query<{
     access_token: string;
     refresh_token: string;
-  }>("SELECT access_token, refresh_token FROM bexio_connections");
+  }>("SELECT access_token, refresh_token FROM bexio_oauth.bexio_connections");
   expect(connections).toHaveLength(1);
   // JWE compact serialization: five dot-separated parts, not a readable JWT.
   expect(connections[0].access_token.split(".")).toHaveLength(5);
@@ -118,8 +118,8 @@ test("connect Bexio for a workspace, use it from a background job, keep it alive
   const lastRefreshed = async () =>
     (
       await db.query<{ last_refreshed_at: Date }>(
-        `SELECT c.last_refreshed_at FROM bexio_grants g
-         JOIN bexio_connections c ON c.id = g.connection_id
+        `SELECT c.last_refreshed_at FROM bexio_oauth.bexio_grants g
+         JOIN bexio_oauth.bexio_connections c ON c.id = g.connection_id
          WHERE g.owner_id = 'workspace:a'`,
       )
     ).rows[0].last_refreshed_at;
@@ -149,7 +149,7 @@ test("signing in again replaces the tokens: still one grant, Better Auth's copy 
   await page.getByTestId("sign-out").click();
   await expect(page.getByTestId("sign-in")).toBeVisible();
   const { rows: first } = await db.query<Row>(
-    "SELECT g.id, c.access_token FROM bexio_grants g JOIN bexio_connections c ON c.id = g.connection_id",
+    "SELECT g.id, c.access_token FROM bexio_oauth.bexio_grants g JOIN bexio_oauth.bexio_connections c ON c.id = g.connection_id",
   );
   // A user saved without a name gets it from Bexio on the next sign-in.
   await db.query(`UPDATE "user" SET name = ''`);
@@ -158,7 +158,7 @@ test("signing in again replaces the tokens: still one grant, Better Auth's copy 
     "Hello Ada Lovelace",
   );
   const { rows: second } = await db.query<Row>(
-    "SELECT g.id, c.access_token FROM bexio_grants g JOIN bexio_connections c ON c.id = g.connection_id",
+    "SELECT g.id, c.access_token FROM bexio_oauth.bexio_grants g JOIN bexio_oauth.bexio_connections c ON c.id = g.connection_id",
   );
   expect(second).toHaveLength(1);
   expect(second[0].id).toBe(first[0].id);
@@ -294,4 +294,18 @@ test("a cancelled connect returns with the error code and saves nothing", async 
   await page.getByTestId("connect-a").click();
   await expect(page.getByTestId("bexio-error")).toContainText("access_denied");
   await expect(page.getByTestId("workspace-a")).toContainText("Not connected.");
+});
+
+test("the grant store's role reaches its two tables and no other table", async () => {
+  const store = new pg.Pool({ connectionString: e2eEnv.BEXIO_DATABASE_URL });
+  try {
+    const denied = await store.query('SELECT 1 FROM "user"').then(
+      () => null,
+      (e: { code?: string }) => e.code,
+    );
+    expect(denied).toBe("42501"); // Better Auth's tables are out of reach
+    await store.query("SELECT 1 FROM bexio_oauth.bexio_grants");
+  } finally {
+    await store.end();
+  }
 });

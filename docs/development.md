@@ -25,6 +25,15 @@ npm workspaces tie it together. Only `packages/bexio-oauth` is ever published; e
 
 **How `sql/` reaches `dist/`.** `packages/bexio-oauth/sql/NNNN_*.sql` is the source of truth for the schema; it is published as-is so people can copy the files by hand. `migrations()` (and the `sql` CLI command built on it) does not read those files at runtime: an app's bundler (Next.js bundles server dependencies by default) would move the code away from them. Instead `scripts/generate-migrations.mjs` embeds them into `packages/bexio-oauth/src/migrations.generated.ts`, which is committed. After adding or changing a migration, run `npm run sql:generate` and commit both files. `npm run build` refuses to build from a stale module (`--check`), and `src/sql.test.ts` fails if the embedded SQL differs from `sql/` or if any runtime source or `dist/` file touches the file system or `import.meta`.
 
+**Writing a migration.** Migrations are written with the default names, `bexio_oauth` (schema), `bexio_store` (store role) and `bexio_token` (token role); `migrations({ schema, storeRole, tokenRole })` replaces them in one pass, as quoted identifiers, or as `'…'` where the SQL compares a role name as a string literal (`rolname = 'bexio_store'`). So:
+
+- Qualify every table with `bexio_oauth.` (`src/sql.test.ts` checks it); never rely on `search_path`.
+- Make every statement idempotent: the output must apply twice in a row (the integration tests do exactly that). Create roles in a `DO` block only if missing; recreate policies with `DROP POLICY IF EXISTS` first.
+- Grant explicitly in the same migration whatever it adds (to `bexio_store`, and in a matching `NNNN_*.token-role.sql` to `bexio_token` if the token role needs it), and add RLS policies for new tables. No `ALTER DEFAULT PRIVILEGES`.
+- A `NNNN_*.token-role.sql` next to a migration is printed after it only with `--token-role`; the generator rejects any other file in `sql/`.
+
+The integration tests apply the SQL with random schema and role names and connect as those roles, whose `search_path` doesn't include the schema: a statement that isn't qualified, or a privilege that's missing, fails there.
+
 ## 2. Local setup
 
 Requirements: Node 24, npm 11, Docker (for Postgres and the local Supabase stack).
@@ -39,12 +48,12 @@ Integration and e2e tests never call the real Bexio. They use `examples/_shared/
 
 ## 3. Tests
 
-| Layer       | Where                                   | What it covers                                                          | Needs                                                  |
-| ----------- | --------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------ |
-| Unit        | `packages/bexio-oauth/src/**/*.test.ts` | flows, errors, encryption, claim and role mapping, CLI                  | nothing                                                |
-| Integration | `packages/bexio-oauth/test/`            | Postgres store, refresh lock under concurrency, rotation, `refreshIdle` | Postgres (Docker), mock-bexio                          |
-| End-to-end  | `examples/*/e2e/`                       | real auth frameworks + the library, in a browser (Playwright)           | example app, mock-bexio                                |
-| Manual      | `examples/README.md` test scenarios     | the same flows against live Bexio                                       | your Bexio app credentials; once per release candidate |
+| Layer       | Where                                   | What it covers                                                                                                                      | Needs                                                  |
+| ----------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| Unit        | `packages/bexio-oauth/src/**/*.test.ts` | flows, errors, encryption, claim and role mapping, CLI                                                                              | nothing                                                |
+| Integration | `packages/bexio-oauth/test/`            | Postgres store as its own roles, migrations applied twice, role privileges, refresh lock under concurrency, rotation, `refreshIdle` | Postgres (Docker) as a superuser, mock-bexio           |
+| End-to-end  | `examples/*/e2e/`                       | real auth frameworks + the library, in a browser (Playwright)                                                                       | example app, mock-bexio                                |
+| Manual      | `examples/README.md` test scenarios     | the same flows against live Bexio                                                                                                   | your Bexio app credentials; once per release candidate |
 
 All automated layers run on every pull request. There are no nightly or scheduled test runs.
 

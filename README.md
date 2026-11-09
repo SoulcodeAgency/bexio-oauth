@@ -7,14 +7,14 @@
 [![TypeScript](https://img.shields.io/badge/types-included-3178c6?logo=typescript&logoColor=white)](packages/bexio-oauth/src)
 [![License: MIT](https://img.shields.io/npm/l/@soulcode/bexio-oauth?color=blue)](LICENSE)
 
-Let your users connect their Bexio account once, then call the Bexio API whenever you need to: in a request, a cron job or a queue worker. `@soulcode/bexio-oauth` runs the OAuth flow, keeps the tokens encrypted in your Postgres database and refreshes them for you.
+Let your users connect their Bexio account once, then call the Bexio API whenever you need to: in a request, a cron job or a queue worker. `@soulcode/bexio-oauth` runs the OAuth flow, keeps the tokens encrypted in your Postgres database and refreshes them for you. Its tables live in their own schema behind dedicated, least-privilege database roles, so the credentials your app holds can't read anything else.
 
 ```bash
 npm install @soulcode/bexio-oauth pg
 ```
 
 - [Package README](packages/bexio-oauth/README.md): install, quickstart, API at a glance.
-- [Integration guide](docs/integration.md): concepts, API, database setup, security model.
+- [Integration guide](docs/integration.md): concepts, API, [database setup and architecture examples](docs/integration.md#4-database-setup), security model.
 - [Examples](examples/): working apps with Better Auth and Supabase Auth.
 - [Development guide](docs/development.md): repo layout, tests, CI/CD.
 

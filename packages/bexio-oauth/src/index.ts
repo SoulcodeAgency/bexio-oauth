@@ -25,9 +25,13 @@ export {
   type BexioOAuthErrorCode,
 } from "./errors.js";
 export { roleFromPermissions, type Role } from "./permissions.js";
-export { migrations, type Migration } from "./sql.js";
+export { migrations, type Migration, type MigrationOptions } from "./sql.js";
 export { memoryStore } from "./store/memory.js";
-export { postgresStore, type SqlClient } from "./store/postgres.js";
+export {
+  postgresStore,
+  type PostgresStoreOptions,
+  type SqlClient,
+} from "./store/postgres.js";
 export type {
   ConnectionRecord,
   ConnectionRefresh,
