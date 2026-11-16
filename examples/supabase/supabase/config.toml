@@ -1,3 +1,4 @@
+#:schema https://supabase.com/schemas/config/v1.json
 # For detailed configuration reference documentation, visit:
 # https://supabase.com/docs/guides/local-development/cli/config
 # A string used to distinguish different Supabase projects on the same host. Defaults to the
@@ -218,8 +219,9 @@ web3 = 30
 # secret = ""
 
 [auth.email]
-# Allow/disallow new user signups via email to your project.
-enable_signup = true
+# Allow/disallow the email provider. When false, users can't sign up or sign in with email.
+# To block new signups only, set enable_signup = false under [auth] instead.
+enabled = true
 # If enabled, a user will be required to confirm any email change on both the old, and new email
 # addresses. If disabled, only the new email is required to confirm.
 double_confirm_changes = true
@@ -256,8 +258,9 @@ otp_expiry = 3600
 # content_path = "./supabase/templates/password_changed_notification.html"
 
 [auth.sms]
-# Allow/disallow new user signups via SMS to your project.
-enable_signup = false
+# Allow/disallow the phone provider. When false, users can't sign up or sign in with SMS.
+# To block new signups only, set enable_signup = false under [auth] instead.
+enabled = false
 # If enabled, users need to confirm their phone number before signing in.
 enable_confirmations = false
 # Template for sending OTP to users
@@ -320,7 +323,7 @@ max_frequency = "5s"
 
 # Use an external OAuth provider. The full list of providers are: `apple`, `azure`, `bitbucket`,
 # `discord`, `facebook`, `github`, `gitlab`, `google`, `keycloak`, `linkedin_oidc`, `notion`, `twitch`,
-# `twitter`, `x`, `slack`, `spotify`, `workos`, `zoom`.
+# `twitter`, `x`, `slack_oidc`, `spotify`, `workos`, `zoom`.
 [auth.external.apple]
 enabled = false
 client_id = ""
@@ -404,7 +407,7 @@ s3_access_key = "env(S3_ACCESS_KEY)"
 # Configures AWS_SECRET_ACCESS_KEY for S3 bucket
 s3_secret_key = "env(S3_SECRET_KEY)"
 
-# pg-delta is the schema diff engine for db diff / db pull / db remote commit.
+# pg-delta is the schema diff engine for db diff / db pull.
 # Set enabled = false to fall back to the legacy migra engine.
 [experimental.pgdelta]
 enabled = true
