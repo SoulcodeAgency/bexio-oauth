@@ -4,6 +4,19 @@ const MOCK_PORT = Number(process.env.E2E_MOCK_PORT ?? 9402);
 const APP_PORT = Number(process.env.E2E_APP_PORT ?? 3300);
 const mock = `http://127.0.0.1:${MOCK_PORT}`;
 
+/** The stack's owner connection (`postgres`), for test setup and checks only. */
+const adminDatabaseUrl =
+  process.env.SUPABASE_DB_URL ??
+  "postgresql://postgres:postgres@127.0.0.1:55622/postgres";
+
+/** The app's connection: `bexio_store`, with the password from supabase/seed.sql. */
+const storeDatabaseUrl = (() => {
+  const url = new URL(adminDatabaseUrl);
+  url.username = "bexio_store";
+  url.password = "bexio-store-local-only";
+  return url.toString();
+})();
+
 // Defaults match `supabase start` with this example's config.toml. The anon
 // key is the public demo key every local Supabase stack uses.
 const env = {
@@ -13,9 +26,7 @@ const env = {
   NEXT_PUBLIC_SUPABASE_ANON_KEY:
     process.env.SUPABASE_ANON_KEY ??
     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0",
-  DATABASE_URL:
-    process.env.SUPABASE_DB_URL ??
-    "postgresql://postgres:postgres@127.0.0.1:55622/postgres",
+  DATABASE_URL: storeDatabaseUrl,
   BEXIO_CLIENT_ID: "example-client",
   BEXIO_CLIENT_SECRET: "example-secret",
   BEXIO_ISSUER: `${mock}/realms/bexio`,
@@ -51,4 +62,8 @@ export default defineConfig({
   ],
 });
 
-export const e2eEnv = { ...env, MOCK_URL: mock };
+export const e2eEnv = {
+  ...env,
+  MOCK_URL: mock,
+  ADMIN_DATABASE_URL: adminDatabaseUrl,
+};

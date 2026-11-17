@@ -4,13 +4,23 @@ import { defineConfig } from "@playwright/test";
 const MOCK_PORT = Number(process.env.E2E_MOCK_PORT ?? 9401);
 const APP_PORT = Number(process.env.E2E_APP_PORT ?? 3400);
 const mock = `http://127.0.0.1:${MOCK_PORT}`;
+const databaseUrl =
+  process.env.DATABASE_URL ??
+  "postgres://postgres:postgres@127.0.0.1:5432/postgres";
+
+/** Same server as DATABASE_URL, as the grant store's own role. */
+const bexioDatabaseUrl = (() => {
+  const url = new URL(databaseUrl);
+  url.username = "bexio_store";
+  url.password = "bexio-store-e2e-only";
+  return url.toString();
+})();
 
 // Everything the app needs, pointed at mock-bexio. Test-only values.
 const env = {
   APP_URL: `http://localhost:${APP_PORT}`,
-  DATABASE_URL:
-    process.env.DATABASE_URL ??
-    "postgres://postgres:postgres@127.0.0.1:5432/postgres",
+  DATABASE_URL: databaseUrl,
+  BEXIO_DATABASE_URL: bexioDatabaseUrl,
   BETTER_AUTH_SECRET: "e2e-only-secret-e2e-only-secret-e2e-only",
   BEXIO_CLIENT_ID: "example-client",
   BEXIO_CLIENT_SECRET: "example-secret",

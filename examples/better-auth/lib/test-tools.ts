@@ -1,6 +1,6 @@
 import { BEXIO_ISSUER } from "@soulcode/bexio-oauth";
 import { compactDecrypt } from "jose";
-import { getPool } from "./db";
+import { getBexioPool } from "./db";
 import { env, optionalEnv } from "./env";
 
 /**
@@ -24,8 +24,8 @@ const saved = (holder.bexioSavedTokens ??= new Map<string, string>());
 export const hasSavedToken = (connectionId: string) => saved.has(connectionId);
 
 async function encryptedRefreshToken(connectionId: string): Promise<string> {
-  const { rows } = await getPool().query<{ refresh_token: string | null }>(
-    "SELECT refresh_token FROM bexio_connections WHERE id = $1",
+  const { rows } = await getBexioPool().query<{ refresh_token: string | null }>(
+    "SELECT refresh_token FROM bexio_oauth.bexio_connections WHERE id = $1",
     [connectionId],
   );
   const token = rows[0]?.refresh_token;
@@ -67,8 +67,8 @@ async function revoke(jwe: string): Promise<void> {
 
 /** The next getAccessToken refreshes: a forced refresh. */
 export async function expireAccessToken(connectionId: string): Promise<void> {
-  await getPool().query(
-    "UPDATE bexio_connections SET access_expires_at = now() - interval '1 minute' WHERE id = $1",
+  await getBexioPool().query(
+    "UPDATE bexio_oauth.bexio_connections SET access_expires_at = now() - interval '1 minute' WHERE id = $1",
     [connectionId],
   );
 }

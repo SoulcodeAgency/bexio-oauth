@@ -2,11 +2,11 @@
 
 Runnable apps that show `@soulcode/bexio-oauth` inside real auth stacks. They are the recipes behind [docs/integration.md §8](../docs/integration.md#8-sign-in-with-bexio).
 
-| App                                        | Auth                             | Database                              | Shows                                                                                                                                                                  | e2e               |
-| ------------------------------------------ | -------------------------------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
-| [`better-auth`](better-auth)               | Better Auth `genericOAuth`       | Plain Postgres (`pg`)                 | **Sign in with Bexio** → `saveGrant`; **Connect Bexio** for workspaces (`authorizeOwner`); a background job; the `refreshIdle` cron; reconnect after `reauth_required` | 7 tests, every PR |
-| [`supabase`](supabase)                     | Supabase Auth (email + password) | Local Supabase (`pg` to its Postgres) | **Connect Bexio** for a Supabase user; RLS keeps both tables unreadable through the API; **Sign in with Bexio** through a custom OIDC provider                         | 1 test, every PR  |
-| [`_shared/mock-bexio`](_shared/mock-bexio) | –                                | –                                     | A mock of Bexio's Keycloak (PKCE, rotating refresh tokens with reuse detection, one token chain per user and company)                                                  | unit tests        |
+| App                                        | Auth                             | Database                              | Shows                                                                                                                                                                                                                                                 | e2e               |
+| ------------------------------------------ | -------------------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
+| [`better-auth`](better-auth)               | Better Auth `genericOAuth`       | Plain Postgres (`pg`)                 | **Sign in with Bexio** → `saveGrant`; **Connect Bexio** for workspaces (`authorizeOwner`); a background job; the `refreshIdle` cron; reconnect after `reauth_required`; the grant store on its own `bexio_store` connection, apart from Better Auth's | 8 tests, every PR |
+| [`supabase`](supabase)                     | Supabase Auth (email + password) | Local Supabase (`pg` to its Postgres) | **Connect Bexio** for a Supabase user as `bexio_store`; the `bexio_oauth` schema is out of reach for the Data API and every API role; **Sign in with Bexio** through a custom OIDC provider                                                           | 4 tests, every PR |
+| [`_shared/mock-bexio`](_shared/mock-bexio) | –                                | –                                     | A mock of Bexio's Keycloak (PKCE, rotating refresh tokens with reuse detection, one token chain per user and company)                                                                                                                                 | unit tests        |
 
 ## Running them
 
@@ -18,7 +18,10 @@ MOCK_BEXIO_PORT=9401 node ../_shared/mock-bexio/src/server.ts   # in a second te
 npm run migrate && npm run dev               # http://localhost:3400
 ```
 
-The Supabase example needs Docker: `npm run db:start` in `examples/supabase` starts the local stack and applies `supabase/migrations/` (generated with `npx @soulcode/bexio-oauth sql`, plus `ENABLE ROW LEVEL SECURITY` on both tables).
+Both apps connect the grant store as the `bexio_store` role ([integration guide §4](../docs/integration.md#4-database-setup)), never as the database owner:
+
+- **Better Auth:** `npm run migrate` applies the library's SQL as `DATABASE_URL`'s user, then sets the password from `BEXIO_DATABASE_URL` for local development. Better Auth keeps its own `DATABASE_URL` connection; the store's role can't read Better Auth's tables.
+- **Supabase** (needs Docker): `npm run db:start` in `examples/supabase` starts the local stack, applies `supabase/migrations/` (the unedited output of `npx @soulcode/bexio-oauth sql`) and then `supabase/seed.sql`, which sets the local `bexio_store` password. On a hosted project, run the same migration, set a strong password once in the SQL editor (`ALTER ROLE bexio_store PASSWORD '…'`) and use the transaction pooler, user `bexio_store.<project-ref>`, port 6543. Leave `bexio_oauth` out of the Data API's exposed schemas.
 
 `npm run test:e2e` in either app starts the mock and the app itself (Playwright `webServer`). If a dev server already holds the ports, set `E2E_APP_PORT` and `E2E_MOCK_PORT` (e.g. 3410 and 9411).
 

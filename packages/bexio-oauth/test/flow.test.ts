@@ -5,7 +5,6 @@ import { startMockBexio, type MockBexio } from "mock-bexio";
 import {
   memoryStore,
   generateKey,
-  postgresStore,
   TokenCipherForTests,
   type GrantStore,
 } from "./internals.js";
@@ -54,7 +53,7 @@ if (hasDatabase) {
     name: "postgres",
     make: async () => {
       await db!.truncate();
-      return postgresStore(db!.pool);
+      return db!.store();
     },
   });
 }

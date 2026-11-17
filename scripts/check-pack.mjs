@@ -23,6 +23,7 @@ for (const required of [
   "dist/bin.js",
   "dist/migrations.generated.js",
   "sql/0001_bexio_oauth.sql",
+  "sql/0001_bexio_oauth.token-role.sql",
 ]) {
   if (!files.some((f) => f.path === required)) {
     console.error(`Missing from the package: ${required}`);

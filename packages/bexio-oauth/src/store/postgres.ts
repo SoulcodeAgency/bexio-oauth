@@ -1,4 +1,5 @@
 import { BexioOAuthError } from "../errors.js";
+import { DEFAULT_SCHEMA, checkSchema, quoteName } from "../names.js";
 import type { ConnectionRecord, GrantRecord, GrantStore } from "./types.js";
 
 /**
@@ -52,8 +53,8 @@ const UPSERT_VALUES: [column: string, value: string][] = [
 ];
 const NEWER_AUTHORIZATION_WINS = UPSERT_VALUES.map(
   ([column, value]) =>
-    `${column} = CASE WHEN EXCLUDED.authorized_at >= bexio_connections.authorized_at
-       THEN ${value} ELSE bexio_connections.${column} END`,
+    `${column} = CASE WHEN EXCLUDED.authorized_at >= stored.authorized_at
+       THEN ${value} ELSE stored.${column} END`,
 ).join(",\n             ");
 
 /** SQLSTATE for a foreign key violation. */
@@ -131,12 +132,29 @@ function toGrant(row: GrantRow): GrantRecord {
   };
 }
 
+export interface PostgresStoreOptions {
+  /**
+   * The schema holding the tables. Default `bexio_oauth`, as `sql` creates
+   * it. Every statement names it, so the connection's `search_path` doesn't
+   * matter. Invalid names throw `invalid_config`.
+   */
+  schema?: string;
+}
+
 /**
  * Store on the `bexio_connections` and `bexio_grants` tables (create them
  * with `npx @soulcode/bexio-oauth sql`). Every operation is a single
  * statement, so it works through transaction-mode poolers and HTTP drivers.
  */
-export function postgresStore(sql: SqlClient): GrantStore {
+export function postgresStore(
+  sql: SqlClient,
+  options: PostgresStoreOptions = {},
+): GrantStore {
+  // Checked and quoted once; no caller input reaches a query after this.
+  const schema = quoteName(checkSchema(options.schema ?? DEFAULT_SCHEMA));
+  const connections = `${schema}.bexio_connections`;
+  const grants = `${schema}.bexio_grants`;
+
   const connection = async (text: string, params: unknown[]) => {
     const { rows } = await sql.query(text, params);
     return rows[0] ? toConnection(rows[0] as ConnectionRow) : null;
@@ -146,7 +164,7 @@ export function postgresStore(sql: SqlClient): GrantStore {
     async upsertGrant(g) {
       const { rows } = await sql.query(
         `WITH connection AS (
-           INSERT INTO bexio_connections (bexio_company_id, bexio_user_id,
+           INSERT INTO ${connections} AS stored (bexio_company_id, bexio_user_id,
              bexio_company_user_id, company_name, user_name, user_email, role, status,
              access_token, refresh_token, access_expires_at, refresh_expires_at, scope,
              refresh_locked_until, refresh_lock_token, authorized_at, last_refreshed_at,
@@ -156,7 +174,7 @@ export function postgresStore(sql: SqlClient): GrantStore {
              ${NEWER_AUTHORIZATION_WINS}
            RETURNING ${CONNECTION_COLUMNS}
          ), g AS (
-           INSERT INTO bexio_grants (owner_id, connection_id, created_at)
+           INSERT INTO ${grants} (owner_id, connection_id, created_at)
            SELECT $1, id, $14 FROM connection
            ON CONFLICT (owner_id, connection_id) DO UPDATE SET owner_id = EXCLUDED.owner_id
            RETURNING id, owner_id, created_at
@@ -193,7 +211,7 @@ export function postgresStore(sql: SqlClient): GrantStore {
       if (grantId !== undefined && !UUID.test(grantId)) return [];
       const { rows } = await sql.query(
         `SELECT ${GRANT_COLUMNS}
-         FROM bexio_grants g JOIN bexio_connections c ON c.id = g.connection_id
+         FROM ${grants} g JOIN ${connections} c ON c.id = g.connection_id
          WHERE g.owner_id = $1
            AND ($2::text IS NULL OR c.bexio_company_id = $2)
            AND ($3::uuid IS NULL OR g.id = $3::uuid)
@@ -205,13 +223,13 @@ export function postgresStore(sql: SqlClient): GrantStore {
 
     async deleteGrant(id) {
       if (!UUID.test(id)) return;
-      await sql.query(`DELETE FROM bexio_grants WHERE id = $1`, [id]);
+      await sql.query(`DELETE FROM ${grants} WHERE id = $1`, [id]);
     },
 
     async getConnection(id) {
       if (!UUID.test(id)) return null;
       return connection(
-        `SELECT ${CONNECTION_COLUMNS} FROM bexio_connections WHERE id = $1`,
+        `SELECT ${CONNECTION_COLUMNS} FROM ${connections} WHERE id = $1`,
         [id],
       );
     },
@@ -223,11 +241,11 @@ export function postgresStore(sql: SqlClient): GrantStore {
       if (!UUID.test(id)) return null;
       try {
         const { rows } = await sql.query(
-          `DELETE FROM bexio_connections c
+          `DELETE FROM ${connections} c
            WHERE c.id = $1
-             AND NOT EXISTS (SELECT 1 FROM bexio_grants g WHERE g.connection_id = c.id)
+             AND NOT EXISTS (SELECT 1 FROM ${grants} g WHERE g.connection_id = c.id)
            RETURNING ${C_COLUMNS}, EXISTS (
-             SELECT 1 FROM bexio_connections o
+             SELECT 1 FROM ${connections} o
              WHERE o.bexio_user_id = c.bexio_user_id AND o.id <> c.id
            ) AS user_has_other_connections`,
           [id],
@@ -256,7 +274,7 @@ export function postgresStore(sql: SqlClient): GrantStore {
       refreshedBefore,
     }) {
       return connection(
-        `UPDATE bexio_connections SET refresh_locked_until = $3, refresh_lock_token = $6
+        `UPDATE ${connections} SET refresh_locked_until = $3, refresh_lock_token = $6
          WHERE id = $1
            AND status = 'active'
            AND (refresh_locked_until IS NULL OR refresh_locked_until <= $2)
@@ -280,7 +298,7 @@ export function postgresStore(sql: SqlClient): GrantStore {
     // expired or was cleared by a reconnect matches no row and changes nothing.
     async saveRefreshed(id, lockToken, r) {
       return connection(
-        `UPDATE bexio_connections SET
+        `UPDATE ${connections} SET
            access_token = $2,
            refresh_token = COALESCE($3, refresh_token),
            access_expires_at = $4,
@@ -310,7 +328,7 @@ export function postgresStore(sql: SqlClient): GrantStore {
 
     async markReauthRequired(id, lockToken, now) {
       return connection(
-        `UPDATE bexio_connections SET status = 'reauth_required',
+        `UPDATE ${connections} SET status = 'reauth_required',
            refresh_locked_until = NULL, refresh_lock_token = NULL, updated_at = $2
          WHERE id = $1 AND refresh_lock_token = $3
          RETURNING ${CONNECTION_COLUMNS}`,
@@ -320,7 +338,7 @@ export function postgresStore(sql: SqlClient): GrantStore {
 
     async releaseRefreshLock(id, lockToken) {
       await sql.query(
-        `UPDATE bexio_connections SET refresh_locked_until = NULL, refresh_lock_token = NULL
+        `UPDATE ${connections} SET refresh_locked_until = NULL, refresh_lock_token = NULL
          WHERE id = $1 AND refresh_lock_token = $2`,
         [id, lockToken],
       );
@@ -328,9 +346,9 @@ export function postgresStore(sql: SqlClient): GrantStore {
 
     async listIdleConnections({ refreshedBefore, limit }) {
       const { rows } = await sql.query(
-        `SELECT ${CONNECTION_COLUMNS} FROM bexio_connections c
+        `SELECT ${CONNECTION_COLUMNS} FROM ${connections} c
          WHERE c.status = 'active' AND c.last_refreshed_at < $1
-           AND EXISTS (SELECT 1 FROM bexio_grants g WHERE g.connection_id = c.id)
+           AND EXISTS (SELECT 1 FROM ${grants} g WHERE g.connection_id = c.id)
          ORDER BY c.last_refreshed_at
          LIMIT $2`,
         [refreshedBefore, limit],

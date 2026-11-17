@@ -1,12 +1,20 @@
+import { parseArgs } from "node:util";
 import { generateKey } from "./crypto.js";
+import { isBexioOAuthError } from "./errors.js";
 import { migrations } from "./sql.js";
 
 const HELP = `Usage: bexio-oauth <command>
 
 Commands:
-  sql [--from <n>]   Print the schema SQL (all migrations, or from migration <n> on)
-  keygen             Print a new random 32-byte encryption key (base64url)
-  help               Show this help
+  sql [options]   Print the schema SQL: a dedicated schema, its tables, and
+                  the login role(s) that may use them
+    --from <n>             only migration <n> onwards (for upgrades)
+    --schema <name>        schema for the tables (default bexio_oauth)
+    --store-role <name>    role for postgresStore's connection (default bexio_store)
+    --token-role <name>    also create a narrower role for runtimes that only
+                           use tokens (conventionally bexio_token)
+  keygen          Print a new random 32-byte encryption key (base64url)
+  help            Show this help
 `;
 
 export async function run(
@@ -17,20 +25,43 @@ export async function run(
   const [command, ...rest] = argv;
   switch (command) {
     case "sql": {
-      let from = 1;
-      if (rest[0] === "--from") {
-        from = Number.parseInt(rest[1] ?? "", 10);
-        if (!Number.isInteger(from) || from < 1) {
-          err("--from needs a migration number, e.g. --from 2\n");
-          return 1;
-        }
-      } else if (rest.length > 0) {
-        err(HELP);
+      let values: Record<string, string | undefined>;
+      try {
+        ({ values } = parseArgs({
+          args: rest,
+          options: {
+            from: { type: "string" },
+            schema: { type: "string" },
+            "store-role": { type: "string" },
+            "token-role": { type: "string" },
+          },
+        }));
+      } catch (error) {
+        err(`${(error as Error).message}\n\n${HELP}`);
         return 1;
       }
-      const selected = (await migrations()).filter((m) => m.number >= from);
-      out(selected.map((m) => `-- ${m.name}\n${m.sql.trimEnd()}\n`).join("\n"));
-      return 0;
+      const from = values.from === undefined ? 1 : Number(values.from);
+      if (!Number.isInteger(from) || from < 1) {
+        err("--from needs a migration number, e.g. --from 2\n");
+        return 1;
+      }
+      try {
+        const selected = (
+          await migrations({
+            schema: values.schema,
+            storeRole: values["store-role"],
+            tokenRole: values["token-role"],
+          })
+        ).filter((m) => m.number >= from);
+        out(
+          selected.map((m) => `-- ${m.name}\n${m.sql.trimEnd()}\n`).join("\n"),
+        );
+        return 0;
+      } catch (error) {
+        if (!isBexioOAuthError(error)) throw error;
+        err(`${error.message}\n`);
+        return 1;
+      }
     }
     case "keygen":
       out(`${generateKey()}\n`);
