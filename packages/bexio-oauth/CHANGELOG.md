@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.0](https://github.com/SoulcodeAgency/bexio-oauth/compare/v0.3.2...v0.4.0) (2026-11-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* **store:** the tables move from `public` to `bexio_oauth`, and the SQL now creates roles. `migrations()` takes `{ schema, storeRole, tokenRole }`. Connect the store as `bexio_store`, after setting its password out of band.
+
+### Features
+
+* **store:** least-privilege Postgres schema and roles ([#26](https://github.com/SoulcodeAgency/bexio-oauth/issues/26)) ([a9265c4](https://github.com/SoulcodeAgency/bexio-oauth/commit/a9265c4d09e5af7753c14377db96770b769c3353)), closes [#21](https://github.com/SoulcodeAgency/bexio-oauth/issues/21)
+
 ## [0.3.2](https://github.com/SoulcodeAgency/bexio-oauth/compare/v0.3.1...v0.3.2) (2026-11-16)
 
 
