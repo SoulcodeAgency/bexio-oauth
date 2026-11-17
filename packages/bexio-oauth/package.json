@@ -1,6 +1,6 @@
 {
   "name": "@soulcode/bexio-oauth",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Bexio OAuth token custody for Node apps: connect Bexio accounts, store tokens encrypted in Postgres, get a valid access token anywhere.",
   "keywords": [
     "bexio",
@@ -47,14 +47,14 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "jose": "^6.2.14",
-    "openid-client": "^6.8.8"
+    "jose": "^6.2.17",
+    "openid-client": "^6.8.9"
   },
   "devDependencies": {
     "@types/pg": "8.23.1",
     "mock-bexio": "*",
     "pg": "8.23.1",
-    "vitest": "5.0.5"
+    "vitest": "5.1.0"
   },
   "publishConfig": {
     "access": "public"
