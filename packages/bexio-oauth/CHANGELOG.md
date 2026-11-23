@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/SoulcodeAgency/bexio-oauth/compare/v0.4.0...v0.4.1) (2026-11-23)
+
+
+### Bug Fixes
+
+* **deps:** bump the production-dependencies group with 4 updates ([#34](https://github.com/SoulcodeAgency/bexio-oauth/issues/34)) ([976fa1e](https://github.com/SoulcodeAgency/bexio-oauth/commit/976fa1ed2299f0dc5952021f2f36c787b9a92eb8))
+
 ## [0.4.0](https://github.com/SoulcodeAgency/bexio-oauth/compare/v0.3.2...v0.4.0) (2026-11-17)
 
 
