@@ -16,7 +16,7 @@
   "dependencies": {
     "@soulcode/bexio-oauth": "*",
     "@supabase/ssr": "0.12.7",
-    "@supabase/supabase-js": "2.119.0",
+    "@supabase/supabase-js": "2.119.2",
     "next": "16.4.6",
     "pg": "8.23.1",
     "react": "19.3.1",
