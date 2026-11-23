@@ -13,8 +13,8 @@
   },
   "dependencies": {
     "@soulcode/bexio-oauth": "*",
-    "better-auth": "1.7.22",
-    "jose": "6.2.17",
+    "better-auth": "1.7.26",
+    "jose": "6.2.18",
     "next": "16.4.6",
     "pg": "8.23.1",
     "react": "19.3.1",
